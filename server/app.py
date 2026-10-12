@@ -6,8 +6,12 @@
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# 确保服务端当前目录在模块搜索路径中
+sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +37,104 @@ app.add_middleware(
 engine = ArenaEngine()
 
 STATIC_DIR = Path(__file__).parent / "static"
+CLIENT_FILE = Path(__file__).parent.parent / "client" / "agent.py"
+
+
+# ----------------------------------------------------------------------
+# 智能体自举装配 (Bootstrap) 与快速接入
+# ----------------------------------------------------------------------
+
+@app.get("/client/agent.py")
+def get_client_agent():
+    """提供纯标准库客户端 agent.py 下载"""
+    if CLIENT_FILE.exists():
+        return HTMLResponse(content=CLIENT_FILE.read_text(encoding="utf-8"), media_type="text/plain; charset=utf-8")
+    raise HTTPException(status_code=404, detail="客户端文件不存在")
+
+
+@app.get("/api/player/bootstrap/{seat_id}")
+def get_player_bootstrap(seat_id: int, request: Request):
+    """获取指定席位的初始配置与专属提示词"""
+    seat = engine.seats.get(seat_id)
+    if not seat:
+        raise HTTPException(status_code=404, detail="未找到该席位")
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "seat_id": seat.seat_id,
+        "token": seat.token,
+        "name": seat.name,
+        "role": seat.role,
+        "init_prompt": seat.init_prompt,
+        "room_title": engine.room_title,
+        "server": base_url
+    }
+
+
+@app.get("/bootstrap/{seat_id}")
+def get_bootstrap_script(seat_id: int, request: Request):
+    """动态生成一键自举 Python 脚本 (Agent 单行命令自动接入)"""
+    seat = engine.seats.get(seat_id)
+    if not seat:
+        raise HTTPException(status_code=404, detail="未找到该席位")
+    base_url = str(request.base_url).rstrip("/")
+
+    script = f'''# -*- coding: utf-8 -*-
+"""Agent Arena 一键自举装配器 (席位: {seat_id})"""
+import urllib.request
+import json
+from pathlib import Path
+
+SERVER = "{base_url}"
+SEAT = {seat_id}
+
+print(f"🚀 正在连接竞技场服务器 {{SERVER}} 接入 {{SEAT}}号席位...")
+
+# 1. 下载 client/agent.py (若不存在)
+agent_py = Path("agent.py")
+if not agent_py.exists():
+    url_client = f"{{SERVER}}/client/agent.py"
+    try:
+        content = urllib.request.urlopen(url_client).read().decode("utf-8")
+        agent_py.write_text(content, encoding="utf-8")
+        print("  ✓ 已下载 agent.py 客户端")
+    except Exception as e:
+        print(f"  ❌ 下载 agent.py 失败: {{e}}")
+
+# 2. 拉取席位设定
+try:
+    url_boot = f"{{SERVER}}/api/player/bootstrap/{{SEAT}}"
+    data = json.loads(urllib.request.urlopen(url_boot).read().decode("utf-8"))
+    
+    # 写入 .agent.json
+    cfg = {{"server": SERVER, "seat": SEAT, "token": data["token"]}}
+    Path(".agent.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    print("  ✓ 已配置 .agent.json 身份令牌")
+
+    # 写入 memory.md
+    mem = Path("memory.md")
+    init_notes = (
+        f"# {{data['name']}} ({{SEAT}}号位 · {{data['role']}}) 私有笔记\\n\\n"
+        f"## 专属目标与初始设定\\n{{data['init_prompt']}}\\n\\n"
+        f"## 局势推演笔记\\n"
+    )
+    mem.write_text(init_notes, encoding="utf-8")
+    print("  ✓ 已初始化 memory.md 私有笔记")
+
+    print("=" * 60)
+    print(f"🎉 成功接入 [{{data['room_title']}}] {{SEAT}}号位！")
+    print(f"角色身份: {{data['role']}} | 令牌: {{data['token'][:10]}}***")
+    print("-" * 60)
+    print("📝 你的初始目标与提示词:")
+    print(data["init_prompt"])
+    print("-" * 60)
+    print("⚡ 指引: 请立即以后台任务运行监听，并结束当前回合:")
+    print("   python agent.py wait")
+    print("=" * 60)
+except Exception as e:
+    print(f"❌ 自举装配失败: {{e}}")
+'''
+    return HTMLResponse(content=script, media_type="text/plain; charset=utf-8")
+
 
 
 # ----------------------------------------------------------------------

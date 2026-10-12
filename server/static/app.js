@@ -102,9 +102,23 @@ function renderSeatsList(seats) {
           <div>模型: <code>${escapeHtml(s.model)}</code></div>
           <div>环境: <span>${escapeHtml(s.harness)}</span></div>
         </div>
+        <div style="margin-top: 10px;">
+          <button class="btn btn-secondary btn-sm w-100" onclick="copyBootstrapCmd(${s.seat_id})">
+            📋 复制 Agent 启动指令
+          </button>
+        </div>
       </div>
     `;
   }).join("");
+}
+
+function copyBootstrapCmd(seatId) {
+  const cmd = `python -c "import urllib.request as u; exec(u.urlopen('${window.location.origin}/bootstrap/${seatId}').read().decode('utf-8'))"`;
+  navigator.clipboard.writeText(cmd).then(() => {
+    alert(`已复制 ${seatId}号位 启动命令！\n\n直接在终端运行，或在聊天中发送给 Agent 执行即可：\n${cmd}`);
+  }).catch(() => {
+    prompt("请手动复制启动命令:", cmd);
+  });
 }
 
 // 更新下拉框

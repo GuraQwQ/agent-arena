@@ -41,6 +41,7 @@ class Seat(BaseModel):
     token: str = ""
     status: str = "IDLE"  # IDLE (空闲), THINKING (行动思考中), WAITING (长轮询等待中)
     group_id: Optional[str] = None
+    init_prompt: str = ""  # 主持人预设的专属初始提示词/目标
     last_seen: float = 0.0
 
 

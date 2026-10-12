@@ -36,6 +36,21 @@ class ArenaEngine:
         # 主持人 Web 控制台 SSE 订阅队列列表
         self.sse_queues: List[asyncio.Queue] = []
 
+        # 默认初始化 4 个预留席位 (带初始口令与目标)
+        for i in range(1, 5):
+            self.seats[i] = Seat(
+                seat_id=i,
+                name=f"Agent_{i}",
+                role=f"探索者_{i}",
+                model="未接入",
+                harness="未接入",
+                token=f"token-{i}-{uuid.uuid4().hex[:6]}",
+                status="IDLE",
+                init_prompt=f"你是本局沙盒推演的 {i}号智能体。你的目标是仔细观察公开局势与私信情报，在主持人点名时做出最佳决策。",
+                last_seen=0.0
+            )
+            self.last_seen_seqs[i] = 0
+
     def _next_seq(self) -> int:
         self._seq_counter += 1
         return self._seq_counter
