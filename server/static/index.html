@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Arena · 主持人控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- 顶部状态栏 -->
+  <header class="navbar">
+    <div class="nav-brand">
+      <span class="logo-badge">Omni</span>
+      <h1>Agent Arena · 主持人中枢</h1>
+    </div>
+    <div class="nav-status">
+      <div class="phase-tag">当前阶段: <strong id="current-phase">准备中</strong></div>
+      <div class="conn-pill" id="conn-pill"><span class="dot"></span> SSE 实时在线</div>
+      <button class="btn btn-danger btn-sm" id="btn-reset" onclick="resetRoom()">重置竞技场</button>
+    </div>
+  </header>
+
+  <!-- 主控制网格 -->
+  <main class="dashboard-grid">
+    <!-- 左栏: 座次与智能体监控 -->
+    <aside class="panel seat-panel">
+      <div class="panel-header">
+        <h2>智能体座次 (<span id="seat-count">0</span>)</h2>
+        <span class="sub-hint">物理目录隔离运行</span>
+      </div>
+      <div class="seats-list" id="seats-list">
+        <div class="empty-state">暂无 Agent 入座，等待连接...</div>
+      </div>
+    </aside>
+
+    <!-- 中栏: 全知事件时间轴 -->
+    <section class="panel timeline-panel">
+      <div class="panel-header">
+        <h2>全知事件流 (God View)</h2>
+        <div class="filter-controls">
+          <label><input type="checkbox" id="chk-auto-scroll" checked> 自动滚动</label>
+        </div>
+      </div>
+      <div class="timeline-container" id="timeline-container">
+        <!-- 动态事件渲染 -->
+      </div>
+    </section>
+
+    <!-- 右栏: 主持人操作中枢 -->
+    <aside class="panel control-panel">
+      <!-- 阶段调度 -->
+      <div class="control-card">
+        <h3>1. 推进场景阶段</h3>
+        <div class="form-row">
+          <input type="text" id="input-phase" placeholder="输入阶段名，例如: 自由调查/圆桌辩论/决战投票" value="第1轮: 自由陈述">
+          <button class="btn btn-primary" onclick="advancePhase()">变更阶段</button>
+        </div>
+      </div>
+
+      <!-- 点名行动调度 -->
+      <div class="control-card highlight-card">
+        <h3>2. 点名 Agent 行动 (触发退出码 42)</h3>
+        <div class="form-group">
+          <label>目标智能体:</label>
+          <select id="select-target-seat">
+            <option value="">-- 选择目标座次 --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>行动指引 Prompt:</label>
+          <textarea id="input-prompt" rows="3" placeholder="例如: 请依据你目前的发现进行发言，指出你怀疑的目标并陈述依据。"></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label>限时 (秒):</label>
+            <input type="number" id="input-timeout" value="60" min="10" max="300">
+          </div>
+          <button class="btn btn-action" onclick="dispatchAction()">⚡ 发出行动指令</button>
+        </div>
+      </div>
+
+      <!-- 信息与私信下发 -->
+      <div class="control-card">
+        <h3>3. 下发公共剧情 / 定向私信</h3>
+        <div class="tab-headers">
+          <button class="tab-btn active" id="tab-broadcast" onclick="switchMsgTab('broadcast')">📢 公共广播</button>
+          <button class="tab-btn" id="tab-private" onclick="switchMsgTab('private')">🔒 定向私密线索</button>
+        </div>
+        <div class="form-group" id="group-private-seat" style="display: none;">
+          <label>私信接收人:</label>
+          <select id="select-private-seat">
+            <option value="">-- 选择接收座次 --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <textarea id="input-msg-content" rows="3" placeholder="输入广播剧情或该 Agent 独享的秘密线索..."></textarea>
+        </div>
+        <button class="btn btn-secondary w-100" onclick="sendMessage()">发送消息</button>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

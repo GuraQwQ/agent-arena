@@ -1,0 +1,21 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 运行期环境与数据
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# 运行时沙盒 (由 init_workspace 动态生成，避免提交个人日志与测试文件)
+workspace/
+
+# 操作系统临时文件
+.DS_Store
+Thumbs.db
+*.log
