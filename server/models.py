@@ -76,3 +76,15 @@ class HostCommand(BaseModel):
     prompt: Optional[str] = None
     options: Optional[List[str]] = None
     timeout: Optional[int] = 60
+
+
+class RoomSnapshot(BaseModel):
+    """落盘持久化快照模型"""
+    room_title: str
+    phase: str
+    round_num: int
+    seq_counter: int
+    seats: Dict[int, Seat]
+    events: List[Event]
+    active_actions: Dict[int, ActionRequest] = Field(default_factory=dict)
+

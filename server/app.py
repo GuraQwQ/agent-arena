@@ -18,11 +18,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-
+from contextlib import asynccontextmanager
 from engine import ArenaEngine
 from models import ActionSubmission, HostCommand, VisibilityScope
+from cli_mount import mount_cli, unmount_cli
 
-app = FastAPI(title="Agent Arena", description="通用多智能体独立操作与沙盒博弈基座")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """服务生命周期管理器：启动时挂载全局 arena CLI，关闭时自动清理"""
+    cli_path = mount_cli()
+    if cli_path:
+        print(f"🚀 已自动挂载全局 arena CLI 入口: {cli_path}")
+    yield
+    unmount_cli()
+
+
+app = FastAPI(title="Agent Arena", description="通用多智能体独立操作与沙盒博弈基座", lifespan=lifespan)
 
 # 启用 CORS
 app.add_middleware(
@@ -33,7 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局引擎单例
+# 全局引擎单例 (自动加载历史快照)
 engine = ArenaEngine()
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -334,8 +346,10 @@ def admin_command(cmd: HostCommand):
         return {"success": True}
 
     elif c_type == "RESET":
-        engine = ArenaEngine(engine.room_title)
-        return {"success": True, "message": "房间已重置"}
+        engine.clear_snapshot()
+        engine = ArenaEngine(engine.room_title, restore_from_disk=False)
+        engine.broadcast_host_update()
+        return {"success": True, "message": "房间已重置并清除快照"}
 
     raise HTTPException(status_code=400, detail=f"未知的命令类型: {cmd.command_type}")
 

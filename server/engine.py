@@ -4,15 +4,21 @@
 """
 
 import asyncio
+import json
+import os
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from models import ActionRequest, ActionSubmission, Event, Seat, VisibilityScope
+from models import ActionRequest, ActionSubmission, Event, RoomSnapshot, Seat, VisibilityScope
+
+SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data"
+SNAPSHOT_FILE = SNAPSHOT_DIR / "room_state.json"
 
 
 class ArenaEngine:
-    def __init__(self, room_title: str = "通用多智能体竞技场"):
+    def __init__(self, room_title: str = "通用多智能体竞技场", restore_from_disk: bool = True):
         self.room_title = room_title
         self.phase = "准备中"
         self.round_num = 1
@@ -36,20 +42,73 @@ class ArenaEngine:
         # 主持人 Web 控制台 SSE 订阅队列列表
         self.sse_queues: List[asyncio.Queue] = []
 
-        # 默认初始化 4 个预留席位 (带初始口令与目标)
-        for i in range(1, 5):
-            self.seats[i] = Seat(
-                seat_id=i,
-                name=f"Agent_{i}",
-                role=f"探索者_{i}",
-                model="未接入",
-                harness="未接入",
-                token=f"token-{i}-{uuid.uuid4().hex[:6]}",
-                status="IDLE",
-                init_prompt=f"你是本局沙盒推演的 {i}号智能体。你的目标是仔细观察公开局势与私信情报，在主持人点名时做出最佳决策。",
-                last_seen=0.0
+        # 尝试从磁盘快照恢复对局
+        if restore_from_disk and self.load_snapshot():
+            print(f"📦 已从磁盘恢复历史对局状态: {len(self.seats)} 个席位, {len(self.events)} 条事件")
+        else:
+            # 首次启动：初始化 4 个预留席位 (带初始口令与目标)
+            for i in range(1, 5):
+                self.seats[i] = Seat(
+                    seat_id=i,
+                    name=f"Agent_{i}",
+                    role=f"探索者_{i}",
+                    model="未接入",
+                    harness="未接入",
+                    token=f"token-{i}-{uuid.uuid4().hex[:6]}",
+                    status="IDLE",
+                    init_prompt=f"你是本局沙盒推演的 {i}号智能体。你的目标是仔细观察公开局势与私信情报，在主持人点名时做出最佳决策。",
+                    last_seen=0.0
+                )
+                self.last_seen_seqs[i] = 0
+            self.save_snapshot()
+
+    def save_snapshot(self):
+        """原子落盘保存当前对局全量快照"""
+        try:
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            snapshot = RoomSnapshot(
+                room_title=self.room_title,
+                phase=self.phase,
+                round_num=self.round_num,
+                seq_counter=self._seq_counter,
+                seats=self.seats,
+                events=self.events,
+                active_actions=self.active_actions
             )
-            self.last_seen_seqs[i] = 0
+            tmp_file = SNAPSHOT_FILE.with_suffix(".tmp")
+            tmp_file.write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
+            tmp_file.replace(SNAPSHOT_FILE)
+        except Exception as e:
+            print(f"⚠️ 保存快照失败: {e}")
+
+    def load_snapshot(self) -> bool:
+        """从磁盘加载恢复快照"""
+        if not SNAPSHOT_FILE.exists():
+            return False
+        try:
+            content = SNAPSHOT_FILE.read_text(encoding="utf-8")
+            snapshot = RoomSnapshot.model_validate_json(content)
+            self.room_title = snapshot.room_title
+            self.phase = snapshot.phase
+            self.round_num = snapshot.round_num
+            self._seq_counter = snapshot.seq_counter
+            self.seats = snapshot.seats
+            self.events = snapshot.events
+            self.active_actions = snapshot.active_actions
+            for sid in self.seats:
+                self.last_seen_seqs[sid] = self._seq_counter
+            return True
+        except Exception as e:
+            print(f"⚠️ 读取历史快照失败，将初始化新对局: {e}")
+            return False
+
+    def clear_snapshot(self):
+        """清空磁盘快照"""
+        try:
+            if SNAPSHOT_FILE.exists():
+                SNAPSHOT_FILE.unlink()
+        except Exception as e:
+            print(f"⚠️ 清理快照失败: {e}")
 
     def _next_seq(self) -> int:
         self._seq_counter += 1
@@ -68,6 +127,7 @@ class ArenaEngine:
             existing.harness = harness or existing.harness
             existing.last_seen = now
             existing.status = "IDLE"
+            self.save_snapshot()
             self.broadcast_host_update()
             return existing
 
@@ -95,6 +155,7 @@ class ArenaEngine:
             from_seat=seat_id,
             scope=VisibilityScope.PUBLIC
         )
+        self.save_snapshot()
         return seat
 
     def verify_token(self, seat_id: int, token: str) -> bool:
@@ -133,7 +194,8 @@ class ArenaEngine:
         # 唤醒所有有权限看到该事件的等待中 Agent (触发 Pre-think 43)
         self._notify_relevant_waiters(event)
         
-        # 推送给主持人控制台 (全知视角)
+        # 保存快照与推送给主持人控制台 (全知视角)
+        self.save_snapshot()
         self._notify_sse(event)
         return event
 

@@ -12,8 +12,10 @@ ENV/
 env/
 .env
 
-# 运行时沙盒 (由 init_workspace 动态生成，避免提交个人日志与测试文件)
+# 运行时沙盒与数据快照 (避免提交个人日志与测试文件)
 workspace/
+data/
+test_seat/
 
 # 操作系统临时文件
 .DS_Store

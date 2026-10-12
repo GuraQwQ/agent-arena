@@ -20,8 +20,9 @@ Traditional multi-agent frameworks often suffer from two major architectural pai
 
 **Agent Arena** distills the core mechanics of tabletop board game multi-agent architectures, stripping away all game-specific rules into an **ultra-clean, highly cohesive, decoupled sandbox base**:
 
+* **Ephemeral Global CLI (`arena`)**: Automatically mounted to the environment PATH on server startup and removed on exit. Zero script file clutter in agent directories! Agents directly invoke `arena wait` and `arena act`.
+* **Crash & Reboot Seamless Recovery**: State changes are atomically saved to `data/room_state.json`. Stop the server to edit code or restart your machine anytime; upon server reboot, the full game state and all tokens are restored in milliseconds. Agents reconnect effortlessly!
 * **Zero-polling passive wakeup**: Driven by HTTP long-polling and **OS process exit codes (`42` & `43`)**, keeping agent harnesses completely silent and cost-free during idle times.
-* **One-line auto-bootstrapping**: No more prompt copy-pasting! Instruct the agent with a single shell command; the agent auto-connects to the FastAPI backend, downloads runtime scripts, fetches its customized role and instructions, and enters the listening loop.
 * **Physical workspace isolation (Sandbox)**: Each agent operates exclusively within its dedicated working directory (`workspace/agent_N/`).
 * **Server-side Fog of War**: Event visibility is strictly gated by seat authentication tokens across `PUBLIC`, `PRIVATE`, `GROUP`, and `HOST_ONLY` scopes. Sensitive reasoning (`secret_reason`) is scrubbed for everyone except the host.
 * **Human Host WebUI**: An out-of-the-box modern dark-themed web dashboard for real-time monitoring, phase transitions, action dispatching, and reviewing hidden thoughts.
@@ -101,31 +102,29 @@ Open your browser and navigate to: **`http://localhost:8000`** to access the Hos
 
 ---
 
-### 2. Connect Your CLI Agents (One-Line Bootloader)
+### 2. Connect Your CLI Agents (Ephemeral Global `arena` CLI)
 
-Connect any autonomous CLI agent (Claude Code, ZCode, Codex CLI, Cursor, Aider, etc.) with a single command:
-
-#### Option A: Send the single-line command in chat (Recommended ⭐)
-In your agent's conversation window (running within its isolated folder, e.g. `workspace/agent_1`), send:
-
-> "Please execute the following command to connect to Seat 1 of the arena and begin:  
-> `python -c "import urllib.request as u; exec(u.urlopen('http://127.0.0.1:8000/bootstrap/1').read().decode('utf-8'))"`"
-
-The agent will automatically:
-1. Download `agent.py` from the local server;
-2. Fetch its customized role setup and initial system prompt into `memory.md`;
-3. Save its authentication token to `.agent.json`;
-4. Display its action guide and immediately start the background listener (`python agent.py wait`)!
-
-*(Note: The host web dashboard includes a "📋 Copy Agent Command" button on each seat card.)*
-
-#### Option B: Pre-provision directories with script
-If you prefer generating folders ahead of time:
+Upon server startup, the temporary global command **`arena`** is automatically registered.
+Inside each agent's working directory, **no Python scripts are needed**. Agents interact directly via the global CLI:
 
 ```bash
-python scripts/init_workspace.py --count 4 --server http://127.0.0.1:8000
+# 1. Join seat (saves token and config to local .agent.json)
+arena join --server http://127.0.0.1:8000 --seat 1 --name "ExplorerA"
+
+# 2. Wait in background (Exit code 42 wakes for action, 43 wakes for observation)
+arena wait
+
+# 3. Submit action with host-only secret reasoning
+arena act --reason "My secret strategy" "I propose we inspect the clues."
 ```
-This generates `workspace/agent_1` through `workspace/agent_4` with all boilerplate files.
+
+> 💡 **Reboot & Resume Guarantee**:  
+> If the server is temporarily stopped (for debugging, code changes, or machine reboot), restarting it will automatically restore the match state and all tokens from `data/room_state.json`. Agents do not need to rejoin—simply executing `arena wait` continues seamlessly!
+
+#### Alternatively, bootstrap via chat command:
+In your agent's conversation window (e.g. Claude Code / ZCode), send:
+> "Please execute the following command to connect to Seat 1 and begin:  
+> `python -c "import urllib.request as u; exec(u.urlopen('http://127.0.0.1:8000/bootstrap/1').read().decode('utf-8'))"`"
 
 ---
 

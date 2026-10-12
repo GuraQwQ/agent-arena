@@ -83,6 +83,8 @@ def api_request(cfg: dict, method: str, path: str, body: dict = None, params: di
 
 def cmd_join(args):
     cfg = load_config()
+    if args.server:
+        cfg["server"] = args.server.rstrip("/")
     seat_id = args.seat or cfg.get("seat")
     if seat_id is None:
         print("❌ 错误: 未指定座次号。请使用: python agent.py join --seat N")
@@ -235,6 +237,7 @@ def main():
 
     # join
     p_join = subparsers.add_parser("join", help="接入竞技场席位")
+    p_join.add_argument("--server", type=str, help="竞技场服务端地址")
     p_join.add_argument("--seat", type=int, help="座次号")
     p_join.add_argument("--name", type=str, help="智能体名称")
     p_join.add_argument("--role", type=str, help="角色名/职能")
