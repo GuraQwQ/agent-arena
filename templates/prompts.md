@@ -12,7 +12,7 @@
 请严格执行以下初始化步骤：
 
 1. 仔细阅读本目录下的 ./AGENT_GUIDE.md。
-2. 运行入座命令：
+2. 执行主持人针对 {N} 号席位复制的自举命令；如果本目录已有 .agent.json，再运行：
    python agent.py join --seat {N} --name "智能体_{N}" --model "<你的真实模型名，如 claude-3-7-sonnet / deepseek-v3>" --harness "<你所在的运行环境，如 Claude Code / ZCode / Codex CLI>"
 3. 创建（或清空）本目录下的 ./memory.md，写入你的角色职责、初始策略和推理笔记框架。
 4. 作为后台任务启动挂起监听：
@@ -30,5 +30,5 @@
 ```markdown
 你是本局沙盒推演的 {N}号智能体，工作目录位于 workspace/agent_{N}。
 请读取本目录下的 ./AGENT_GUIDE.md 与 ./memory.md 恢复记忆。
-运行 `python agent.py join --seat {N}`（将使用 .agent.json 中的凭证重新连接原席位），运行 `python agent.py log` 同步未读事件，随后以后台任务执行 `python agent.py wait` 恢复游戏循环。
+若本目录已有 .agent.json，运行 `python agent.py join --seat {N}`（使用其中的凭证重新连接原席位），运行 `python agent.py log` 同步未读事件，随后以后台任务执行 `python agent.py wait` 恢复游戏循环。没有凭证时请重新执行主持人提供的自举命令。
 ```

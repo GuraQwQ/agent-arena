@@ -1,10 +1,11 @@
 """mock_agent.py —— 自动化模拟智能体 (用于单机联调、系统演示或缺席补位)
 
 用法:
-    python scripts/mock_agent.py --seat 1 --name "模拟博弈者A" --model "mock-llm-v1"
+    python scripts/mock_agent.py --seat 1 --claim-token "主持人发放的令牌" --name "模拟博弈者A" --model "mock-llm-v1"
 """
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -19,16 +20,29 @@ def run_cmd(cwd: Path, args: list) -> tuple:
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 
-def simulate_agent(seat: int, name: str, model: str):
+def simulate_agent(seat: int, name: str, model: str, claim_token: str = ""):
     agent_dir = WORKSPACE_DIR / f"agent_{seat}"
     if not (agent_dir / "agent.py").exists():
         print(f"❌ 目录 {agent_dir} 未就绪，请先运行: python scripts/init_workspace.py --count {seat}")
         return
 
     print(f"🤖 模拟智能体启动: {seat}号位 [{name}]")
+
+    if not claim_token:
+        cfg_path = agent_dir / ".agent.json"
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            cfg = {}
+        if not cfg.get("token"):
+            print("❌ 请先在该工作目录执行主持人控制台复制的自举命令，或传入 --claim-token")
+            return
     
     # 1. 入座
-    code, out, _ = run_cmd(agent_dir, ["join", "--seat", str(seat), "--name", name, "--model", model, "--harness", "MockHarness"])
+    join_args = ["join", "--seat", str(seat), "--name", name, "--model", model, "--harness", "MockHarness"]
+    if claim_token:
+        join_args.extend(["--claim-token", claim_token])
+    code, out, _ = run_cmd(agent_dir, join_args)
     print(out)
     if code != 0:
         return
@@ -80,10 +94,11 @@ def main():
     parser.add_argument("--seat", type=int, required=True, help="座次号")
     parser.add_argument("--name", type=str, default="", help="智能体名称")
     parser.add_argument("--model", type=str, default="mock-llm-3", help="模拟模型名称")
+    parser.add_argument("--claim-token", type=str, default="", help="主持人发放的席位认领令牌")
 
     args = parser.parse_args()
     name = args.name or f"模拟者_{args.seat}"
-    simulate_agent(seat=args.seat, name=name, model=args.model)
+    simulate_agent(seat=args.seat, name=name, model=args.model, claim_token=args.claim_token)
 
 
 if __name__ == "__main__":

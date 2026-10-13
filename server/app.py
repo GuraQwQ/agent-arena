@@ -6,6 +6,7 @@
 import asyncio
 import json
 import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,15 +14,25 @@ from typing import Any, Dict, List, Optional
 # 确保服务端当前目录在模块搜索路径中
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from engine import ArenaEngine
-from models import ActionSubmission, HostCommand, VisibilityScope
+from models import ActionSubmission, ArenaSettingsUpdate, HostCommand, VisibilityScope
 from cli_mount import mount_cli, unmount_cli
+
+
+ADMIN_TOKEN = os.environ.get("ARENA_ADMIN_TOKEN") or secrets.token_urlsafe(32)
+
+
+def require_admin(request: Request):
+    """验证主持人令牌；玩家令牌不能访问管理接口"""
+    supplied = request.headers.get("X-Admin-Token") or request.cookies.get("arena_admin")
+    if not supplied or not secrets.compare_digest(supplied, ADMIN_TOKEN):
+        raise HTTPException(status_code=403, detail="需要主持人管理令牌")
 
 
 @asynccontextmanager
@@ -30,6 +41,7 @@ async def lifespan(app: FastAPI):
     cli_path = mount_cli()
     if cli_path:
         print(f"🚀 已自动挂载全局 arena CLI 入口: {cli_path}")
+    print(f"🔐 主持人管理令牌: {ADMIN_TOKEN}")
     yield
     unmount_cli()
 
@@ -65,11 +77,13 @@ def get_client_agent():
 
 
 @app.get("/api/player/bootstrap/{seat_id}")
-def get_player_bootstrap(seat_id: int, request: Request):
+async def get_player_bootstrap(seat_id: int, request: Request, claim_token: str = Query(...)):
     """获取指定席位的初始配置与专属提示词"""
     seat = engine.seats.get(seat_id)
     if not seat:
         raise HTTPException(status_code=404, detail="未找到该席位")
+    if not engine.verify_claim_token(seat_id, claim_token):
+        raise HTTPException(status_code=403, detail="席位自举令牌无效")
     base_url = str(request.base_url).rstrip("/")
     return {
         "seat_id": seat.seat_id,
@@ -83,11 +97,13 @@ def get_player_bootstrap(seat_id: int, request: Request):
 
 
 @app.get("/bootstrap/{seat_id}")
-def get_bootstrap_script(seat_id: int, request: Request):
+async def get_bootstrap_script(seat_id: int, request: Request, claim_token: str = Query(...)):
     """动态生成一键自举 Python 脚本 (Agent 单行命令自动接入)"""
     seat = engine.seats.get(seat_id)
     if not seat:
         raise HTTPException(status_code=404, detail="未找到该席位")
+    if not engine.verify_claim_token(seat_id, claim_token):
+        raise HTTPException(status_code=403, detail="席位自举令牌无效")
     base_url = str(request.base_url).rstrip("/")
 
     script = f'''# -*- coding: utf-8 -*-
@@ -98,6 +114,7 @@ from pathlib import Path
 
 SERVER = "{base_url}"
 SEAT = {seat_id}
+CLAIM_TOKEN = "{claim_token}"
 
 print(f"🚀 正在连接竞技场服务器 {{SERVER}} 接入 {{SEAT}}号席位...")
 
@@ -114,7 +131,7 @@ if not agent_py.exists():
 
 # 2. 拉取席位设定
 try:
-    url_boot = f"{{SERVER}}/api/player/bootstrap/{{SEAT}}"
+    url_boot = f"{{SERVER}}/api/player/bootstrap/{{SEAT}}?claim_token={{CLAIM_TOKEN}}"
     data = json.loads(urllib.request.urlopen(url_boot).read().decode("utf-8"))
     
     # 写入 .agent.json
@@ -160,19 +177,26 @@ class JoinRequest(BaseModel):
     model: str = "未知模型"
     harness: str = "命令行"
     token: Optional[str] = None
+    claim_token: Optional[str] = None
 
 
 @app.post("/api/player/join")
-def player_join(req: JoinRequest):
+async def player_join(req: JoinRequest):
     """Agent 入座或使用既有令牌重连"""
-    seat = engine.join_seat(
-        seat_id=req.seat_id,
-        name=req.name,
-        role=req.role,
-        model=req.model,
-        harness=req.harness,
-        token=req.token
-    )
+    try:
+        seat = engine.join_seat(
+            seat_id=req.seat_id,
+            name=req.name,
+            role=req.role,
+            model=req.model,
+            harness=req.harness,
+            token=req.token,
+            claim_token=req.claim_token
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     return {
         "success": True,
         "seat_id": seat.seat_id,
@@ -188,7 +212,7 @@ def player_join(req: JoinRequest):
 @app.get("/api/player/wait")
 async def player_wait(
     seat_id: int = Query(...),
-    timeout: int = Query(50, le=60),
+    timeout: int = Query(50, ge=1, le=60),
     x_player_token: str = Header(...)
 ):
     """长轮询挂起等待行动或新观察"""
@@ -200,7 +224,7 @@ async def player_wait(
 
 
 @app.get("/api/player/log")
-def player_log(
+async def player_log(
     seat_id: int = Query(...),
     since_seq: int = Query(0),
     x_player_token: str = Header(...)
@@ -213,7 +237,7 @@ def player_log(
 
 
 @app.get("/api/player/status")
-def player_status(
+async def player_status(
     seat_id: int = Query(...),
     x_player_token: str = Header(...)
 ):
@@ -232,7 +256,7 @@ def player_status(
 
 
 @app.post("/api/player/act")
-def player_submit_act(sub: ActionSubmission):
+async def player_submit_act(sub: ActionSubmission):
     """提交行动结果与仅主持人可见的 secret_reason"""
     try:
         event = engine.submit_action(
@@ -244,8 +268,12 @@ def player_submit_act(sub: ActionSubmission):
             data=sub.data
         )
         return {"success": True, "event_seq": event.seq}
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="令牌无效")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except TimeoutError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ----------------------------------------------------------------------
@@ -253,14 +281,16 @@ def player_submit_act(sub: ActionSubmission):
 # ----------------------------------------------------------------------
 
 @app.get("/api/admin/snapshot")
-def admin_snapshot():
+async def admin_snapshot(request: Request):
     """获取主持人全知视角快照"""
+    require_admin(request)
     return engine.get_host_snapshot()
 
 
 @app.get("/api/admin/stream")
 async def admin_stream(request: Request):
     """主持人控制台 SSE 实时增量流"""
+    require_admin(request)
     queue: asyncio.Queue = asyncio.Queue()
     engine.sse_queues.append(queue)
 
@@ -277,7 +307,9 @@ async def admin_stream(request: Request):
                     msg = await asyncio.wait_for(queue.get(), timeout=25.0)
                     yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
-                    # 发送心跳保活
+                    # 心跳同时刷新时间窗口，及时隐藏过期事件
+                    snapshot = json.dumps({"type": "SNAPSHOT", "data": engine.get_host_snapshot()}, ensure_ascii=False)
+                    yield f"data: {snapshot}\n\n"
                     yield ": ping\n\n"
         finally:
             if queue in engine.sse_queues:
@@ -295,14 +327,16 @@ async def admin_stream(request: Request):
 
 
 @app.post("/api/admin/command")
-def admin_command(cmd: HostCommand):
+async def admin_command(cmd: HostCommand, request: Request):
     """执行主持人控制动作"""
-    global engine
+    require_admin(request)
     c_type = cmd.command_type.upper()
     
     if c_type == "ADVANCE_PHASE":
         if cmd.phase:
             engine.phase = cmd.phase
+        if cmd.round_num is not None:
+            engine.round_num = cmd.round_num
         engine.record_event(
             event_type="PHASE_CHANGE",
             title=f"【阶段变更】进入阶段: {engine.phase}",
@@ -315,13 +349,16 @@ def admin_command(cmd: HostCommand):
     elif c_type == "DISPATCH_ACTION":
         if cmd.target_seat is None:
             raise HTTPException(status_code=400, detail="必须指定目标席位 target_seat")
-        req = engine.dispatch_action(
-            target_seat=cmd.target_seat,
-            action_type="ACT",
-            prompt=cmd.prompt or "请针对当前局势做出你的行动与分析。",
-            options=cmd.options or [],
-            timeout=cmd.timeout or 60
-        )
+        try:
+            req = engine.dispatch_action(
+                target_seat=cmd.target_seat,
+                action_type="ACT",
+                prompt=cmd.prompt or "请针对当前局势做出你的行动与分析。",
+                options=cmd.options or [],
+                timeout=cmd.timeout if cmd.timeout is not None else 60
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return {"success": True, "request": req.model_dump()}
 
     elif c_type == "BROADCAST":
@@ -336,6 +373,8 @@ def admin_command(cmd: HostCommand):
     elif c_type == "SEND_PRIVATE":
         if cmd.target_seat is None:
             raise HTTPException(status_code=400, detail="必须指定目标席位 target_seat")
+        if cmd.target_seat not in engine.seats:
+            raise HTTPException(status_code=400, detail="目标席位不存在")
         engine.record_event(
             event_type="PRIVATE_MESSAGE",
             title=f"【私信指令】主持人 -> {cmd.target_seat}号位",
@@ -346,12 +385,48 @@ def admin_command(cmd: HostCommand):
         return {"success": True}
 
     elif c_type == "RESET":
-        engine.clear_snapshot()
-        engine = ArenaEngine(engine.room_title, restore_from_disk=False)
+        engine.reset()
         engine.broadcast_host_update()
         return {"success": True, "message": "房间已重置并清除快照"}
 
     raise HTTPException(status_code=400, detail=f"未知的命令类型: {cmd.command_type}")
+
+
+@app.post("/api/admin/session")
+async def admin_session(request: Request, response: Response):
+    """将主持人管理令牌换成仅浏览器可读的会话 Cookie"""
+    supplied = request.headers.get("X-Admin-Token")
+    if not supplied or not secrets.compare_digest(supplied, ADMIN_TOKEN):
+        raise HTTPException(status_code=403, detail="主持人管理令牌无效")
+    response.set_cookie(
+        "arena_admin",
+        ADMIN_TOKEN,
+        httponly=True,
+        samesite="strict",
+        secure=False
+    )
+    return {"success": True}
+
+
+@app.get("/api/admin/settings")
+async def admin_settings(request: Request):
+    require_admin(request)
+    return engine.settings.model_dump()
+
+
+@app.post("/api/admin/settings")
+async def update_admin_settings(update: ArenaSettingsUpdate, request: Request):
+    require_admin(request)
+    fields = update.model_fields_set
+    if "allow_free_actions" in fields:
+        engine.settings.allow_free_actions = bool(update.allow_free_actions)
+    if "history_rounds" in fields:
+        engine.settings.history_rounds = update.history_rounds
+    if "history_seconds" in fields:
+        engine.settings.history_seconds = update.history_seconds
+    engine.save_snapshot()
+    engine.broadcast_host_update()
+    return {"success": True, "settings": engine.settings.model_dump()}
 
 
 # 挂载静态文件与默认页面

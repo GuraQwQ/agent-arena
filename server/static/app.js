@@ -7,11 +7,43 @@ let eventSource = null;
 let currentSeats = {};
 let currentPhase = "准备中";
 let activeMsgTab = "broadcast";
+const ADMIN_TOKEN_KEY = "arena_admin_token";
 
 // 初始化连接
-window.addEventListener("DOMContentLoaded", () => {
-  connectSSE();
+window.addEventListener("DOMContentLoaded", async () => {
+  if (await ensureAdminSession()) {
+    connectSSE();
+  } else {
+    document.getElementById("conn-pill").textContent = "等待主持人令牌";
+  }
 });
+
+async function ensureAdminSession() {
+  let token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  if (!token) {
+    token = window.prompt("请输入服务端启动日志中的主持人管理令牌:");
+  }
+  if (!token) return false;
+
+  const res = await fetch("/api/admin/session", {
+    method: "POST",
+    headers: { "X-Admin-Token": token }
+  });
+  if (!res.ok) {
+    sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+    alert("主持人管理令牌无效");
+    return false;
+  }
+  sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
+  return true;
+}
+
+function adminFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  if (token) headers.set("X-Admin-Token", token);
+  return fetch(url, { ...options, headers });
+}
 
 function connectSSE() {
   const pill = document.getElementById("conn-pill");
@@ -50,7 +82,9 @@ function connectSSE() {
 function renderSnapshot(data) {
   currentPhase = data.phase || "准备中";
   document.getElementById("current-phase").textContent = currentPhase;
+  document.getElementById("input-round").value = data.round_num || 1;
   currentSeats = data.seats || {};
+  renderSettings(data.settings || {});
 
   // 渲染座次卡片
   renderSeatsList(currentSeats);
@@ -113,7 +147,12 @@ function renderSeatsList(seats) {
 }
 
 function copyBootstrapCmd(seatId) {
-  const cmd = `python -c "import urllib.request as u; exec(u.urlopen('${window.location.origin}/bootstrap/${seatId}').read().decode('utf-8'))"`;
+  const seat = currentSeats[seatId];
+  if (!seat || !seat.claim_token) {
+    return alert("该席位没有可用的主持人自举令牌");
+  }
+  const bootstrapUrl = `${window.location.origin}/bootstrap/${seatId}?claim_token=${encodeURIComponent(seat.claim_token)}`;
+  const cmd = `python -c "import urllib.request as u; exec(u.urlopen('${bootstrapUrl}').read().decode('utf-8'))"`;
   navigator.clipboard.writeText(cmd).then(() => {
     alert(`已复制 ${seatId}号位 启动命令！\n\n直接在终端运行，或在聊天中发送给 Agent 执行即可：\n${cmd}`);
   }).catch(() => {
@@ -140,6 +179,39 @@ function updateSeatSelects(seats) {
 
   if (currentTarget) targetSelect.value = currentTarget;
   if (currentPrivate) privateSelect.value = currentPrivate;
+}
+
+function renderSettings(settings) {
+  document.getElementById("setting-free-actions").checked = Boolean(settings.allow_free_actions);
+  document.getElementById("setting-history-rounds").value = settings.history_rounds ?? "";
+  document.getElementById("setting-history-seconds").value = settings.history_seconds ?? "";
+}
+
+function nullablePositiveInt(id) {
+  const value = document.getElementById(id).value.trim();
+  if (!value) return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) {
+    throw new Error("窗口设置必须是正整数，留空表示不过期");
+  }
+  return number;
+}
+
+async function saveSettings() {
+  try {
+    const res = await adminFetch("/api/admin/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allow_free_actions: document.getElementById("setting-free-actions").checked,
+        history_rounds: nullablePositiveInt("setting-history-rounds"),
+        history_seconds: nullablePositiveInt("setting-history-seconds")
+      })
+    });
+    if (!res.ok) throw new Error((await res.text()) || "保存设置失败");
+  } catch (err) {
+    alert(err.message || "保存设置失败");
+  }
 }
 
 // 渲染单个事件追加
@@ -202,12 +274,13 @@ async function advancePhase() {
   const phase = document.getElementById("input-phase").value.trim();
   if (!phase) return alert("阶段名不能为空");
   
-  await fetch("/api/admin/command", {
+  await adminFetch("/api/admin/command", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       command_type: "ADVANCE_PHASE",
-      phase: phase
+      phase: phase,
+      round_num: parseInt(document.getElementById("input-round").value) || 1
     })
   });
 }
@@ -219,7 +292,7 @@ async function dispatchAction() {
   const prompt = document.getElementById("input-prompt").value.trim();
   const timeout = parseInt(document.getElementById("input-timeout").value) || 60;
 
-  await fetch("/api/admin/command", {
+  await adminFetch("/api/admin/command", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -245,7 +318,7 @@ async function sendMessage() {
   if (!content) return alert("消息内容不能为空");
 
   if (activeMsgTab === "broadcast") {
-    await fetch("/api/admin/command", {
+    await adminFetch("/api/admin/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -256,7 +329,7 @@ async function sendMessage() {
   } else {
     const seat = document.getElementById("select-private-seat").value;
     if (!seat) return alert("请选择私信接收人");
-    await fetch("/api/admin/command", {
+    await adminFetch("/api/admin/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -272,7 +345,7 @@ async function sendMessage() {
 
 async function resetRoom() {
   if (!confirm("确定要重置当前竞技场房间吗？所有座次和记录将被清空。")) return;
-  await fetch("/api/admin/command", {
+  await adminFetch("/api/admin/command", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ command_type: "RESET" })

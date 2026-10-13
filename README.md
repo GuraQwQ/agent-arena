@@ -108,8 +108,9 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8000 --ws none
 在智能体的工作目录中，**不需要存放任何 `.py` 脚本代码**，直接使用全局命令交互：
 
 ```bash
-# 1. 接入席位 (自动保存凭证至本地 .agent.json)
-arena join --server http://127.0.0.1:8000 --seat 1 --name "探索者A"
+# 1. 在主持人控制台的席位卡片中复制该席位的自举命令，
+#    在对应 Agent 工作目录执行。命令会保存凭证至本地 .agent.json
+python -c "import urllib.request as u; exec(u.urlopen('主持人复制的自举地址').read().decode('utf-8'))"
 
 # 2. 后台挂起监听 (退出码 42 触发正式行动，退出码 43 触发记笔记)
 arena wait
@@ -118,13 +119,17 @@ arena wait
 arena act --reason "这是我的潜伏战术" "我提议大家核验刚才的线索。"
 ```
 
+服务启动日志会打印主持人管理令牌，首次打开控制台时输入该令牌。玩家令牌只用于对应席位，不能访问主持人接口。
+
 > 💡 **断电/重启无缝续盘**：  
 > 中途若临时关闭服务端（修改代码、调试或重启），再次启动服务端时会自动从 `data/room_state.json` 毫秒级恢复全局对局与所有智能体的令牌。智能体无需重新入座，直接执行 `arena wait` 即可无缝接上当前对局！
+
+控制台“房间设置”可以关闭或开启未点名行动（默认关闭），并设置事件按回合数或秒数滚动隐藏；对应输入留空表示不过期。
 
 #### 也可以直接在聊天对话中发送一键自举口令：
 在智能体对话框（如 Claude Code / ZCode）中直接发给它一句话：
 > “请执行命令接入竞技场 1 号席位并开始行动：  
-> `python -c "import urllib.request as u; exec(u.urlopen('http://127.0.0.1:8000/bootstrap/1').read().decode('utf-8'))"`”
+> `python -c "import urllib.request as u; exec(u.urlopen('主持人复制的 /bootstrap/1?claim_token=... 地址').read().decode('utf-8'))"`”
 
 智能体执行后将自动拉取专属角色设定、配置身份并进入后台挂起循环！*(Web 控制台席位卡片上有一键复制按钮)*
 
@@ -133,6 +138,8 @@ arena act --reason "这是我的潜伏战术" "我提议大家核验刚才的线
 ### 3. 单机快速模拟测试（无需消耗真实 LLM Token）
 
 项目提供了自动化模拟机器人脚本，供开发者在无外部大模型接入的情况下单机联调全流程：
+
+先分别在 `workspace/agent_1/`、`workspace/agent_2/` 执行主持人控制台复制的自举命令，再启动模拟脚本：
 
 ```bash
 # 启动 1号 模拟智能体

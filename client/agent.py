@@ -87,7 +87,7 @@ def cmd_join(args):
         cfg["server"] = args.server.rstrip("/")
     seat_id = args.seat or cfg.get("seat")
     if seat_id is None:
-        print("❌ 错误: 未指定座次号。请使用: python agent.py join --seat N")
+        print("❌ 错误: 未指定座次号。请先执行主持人提供的自举命令，或使用 join --claim-token")
         sys.exit(EXIT_ERROR)
 
     payload = {
@@ -96,7 +96,8 @@ def cmd_join(args):
         "role": args.role or "探索者",
         "model": args.model or "未指定模型",
         "harness": args.harness or "命令行",
-        "token": cfg.get("token")
+        "token": cfg.get("token"),
+        "claim_token": args.claim_token
     }
 
     res = api_request(cfg, "POST", "/api/player/join", body=payload)
@@ -117,7 +118,7 @@ def cmd_wait(args):
     cfg = load_config()
     seat_id = cfg.get("seat")
     if not seat_id or not cfg.get("token"):
-        print("❌ 未入座或缺少令牌，请先运行: python agent.py join --seat N")
+        print("❌ 未入座或缺少令牌，请先执行主持人提供的自举命令")
         sys.exit(EXIT_ERROR)
 
     timeout = args.timeout or 50
@@ -163,7 +164,7 @@ def cmd_act(args):
     cfg = load_config()
     seat_id = cfg.get("seat")
     if not seat_id or not cfg.get("token"):
-        print("❌ 未入座或缺少令牌，请先运行: python agent.py join")
+        print("❌ 未入座或缺少令牌，请先执行主持人提供的自举命令")
         sys.exit(EXIT_ERROR)
 
     content = ""
@@ -243,6 +244,7 @@ def main():
     p_join.add_argument("--role", type=str, help="角色名/职能")
     p_join.add_argument("--model", type=str, help="运行的模型名 (如 claude-3-7-sonnet / deepseek-v3)")
     p_join.add_argument("--harness", type=str, help="运行环境 (如 Claude Code / ZCode)")
+    p_join.add_argument("--claim-token", type=str, help="主持人发放的席位认领令牌")
 
     # wait
     p_wait = subparsers.add_parser("wait", help="后台长轮询挂起等待行动 (退出码 42/43)")

@@ -20,6 +20,7 @@ class Event(BaseModel):
     """全局事件条目"""
     seq: int = Field(..., description="自增全局序号")
     timestamp: float = Field(..., description="产生时间戳")
+    round_num: int = Field(1, ge=1, description="产生时所在回合")
     event_type: str = Field(..., description="事件类型 (ANNOUNCEMENT, SPEECH, ACTION, SYSTEM)")
     title: str = Field(..., description="事件概要或标题")
     content: str = Field(..., description="公开或给接收者看的内容主体")
@@ -39,6 +40,7 @@ class Seat(BaseModel):
     model: str = "未知模型"
     harness: str = "未知环境"
     token: str = ""
+    claim_token: str = ""
     status: str = "IDLE"  # IDLE (空闲), THINKING (行动思考中), WAITING (长轮询等待中)
     group_id: Optional[str] = None
     init_prompt: str = ""  # 主持人预设的专属初始提示词/目标
@@ -75,7 +77,22 @@ class HostCommand(BaseModel):
     secret_reason: Optional[str] = None
     prompt: Optional[str] = None
     options: Optional[List[str]] = None
-    timeout: Optional[int] = 60
+    timeout: Optional[int] = Field(60, ge=1, le=86400)
+    round_num: Optional[int] = Field(None, ge=1)
+
+
+class ArenaSettings(BaseModel):
+    """房间行为和事件历史窗口设置"""
+    allow_free_actions: bool = False
+    history_rounds: Optional[int] = Field(None, ge=1)
+    history_seconds: Optional[int] = Field(None, ge=1)
+
+
+class ArenaSettingsUpdate(BaseModel):
+    """主持人可修改的房间设置；窗口为 None 时表示不过期"""
+    allow_free_actions: Optional[bool] = None
+    history_rounds: Optional[int] = Field(None, ge=1)
+    history_seconds: Optional[int] = Field(None, ge=1)
 
 
 class RoomSnapshot(BaseModel):
@@ -87,4 +104,6 @@ class RoomSnapshot(BaseModel):
     seats: Dict[int, Seat]
     events: List[Event]
     active_actions: Dict[int, ActionRequest] = Field(default_factory=dict)
+    last_seen_seqs: Dict[int, int] = Field(default_factory=dict)
+    settings: ArenaSettings = Field(default_factory=ArenaSettings)
 

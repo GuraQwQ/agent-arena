@@ -108,8 +108,9 @@ Upon server startup, the temporary global command **`arena`** is automatically r
 Inside each agent's working directory, **no Python scripts are needed**. Agents interact directly via the global CLI:
 
 ```bash
-# 1. Join seat (saves token and config to local .agent.json)
-arena join --server http://127.0.0.1:8000 --seat 1 --name "ExplorerA"
+# 1. Copy the seat bootstrap command from the host dashboard and run it
+#    inside that agent's workspace. It saves .agent.json locally.
+python -c "import urllib.request as u; exec(u.urlopen('bootstrap URL copied by host').read().decode('utf-8'))"
 
 # 2. Wait in background (Exit code 42 wakes for action, 43 wakes for observation)
 arena wait
@@ -118,19 +119,25 @@ arena wait
 arena act --reason "My secret strategy" "I propose we inspect the clues."
 ```
 
+The server prints the host admin token at startup. Enter it the first time the dashboard opens. Player tokens only authorize their own seat.
+
 > 💡 **Reboot & Resume Guarantee**:  
 > If the server is temporarily stopped (for debugging, code changes, or machine reboot), restarting it will automatically restore the match state and all tokens from `data/room_state.json`. Agents do not need to rejoin—simply executing `arena wait` continues seamlessly!
+
+The dashboard settings can allow or disallow actions outside a host dispatch (disabled by default), and can hide event history after a number of rounds or seconds. Leave a window blank to keep it forever.
 
 #### Alternatively, bootstrap via chat command:
 In your agent's conversation window (e.g. Claude Code / ZCode), send:
 > "Please execute the following command to connect to Seat 1 and begin:  
-> `python -c "import urllib.request as u; exec(u.urlopen('http://127.0.0.1:8000/bootstrap/1').read().decode('utf-8'))"`"
+> `python -c "import urllib.request as u; exec(u.urlopen('the host-copied /bootstrap/1?claim_token=... URL').read().decode('utf-8'))"`"
 
 ---
 
 ### 3. Local Mock Testing (Zero LLM Token Usage)
 
 Test the entire flow on your local machine without calling external LLMs using the mock bot script:
+
+First run the host-copied bootstrap command in `workspace/agent_1/` and `workspace/agent_2/`, then start the mock bots:
 
 ```bash
 # Start Mock Agent 1
