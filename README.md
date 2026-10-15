@@ -113,7 +113,7 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8000 --ws none
 python -c "import urllib.request as u; exec(u.urlopen('主持人复制的自举地址').read().decode('utf-8'))"
 
 # 2. 后台挂起监听 (退出码 42 触发正式行动，退出码 43 触发记笔记)
-arena wait
+arena watch
 
 # 3. 提交行动与仅主持人可见的战术心声
 arena act --reason "这是我的潜伏战术" "我提议大家核验刚才的线索。"
@@ -122,9 +122,11 @@ arena act --reason "这是我的潜伏战术" "我提议大家核验刚才的线
 服务启动日志会打印主持人管理令牌，首次打开控制台时输入该令牌。玩家令牌只用于对应席位，不能访问主持人接口。
 
 > 💡 **断电/重启无缝续盘**：  
-> 中途若临时关闭服务端（修改代码、调试或重启），再次启动服务端时会自动从 `data/room_state.json` 毫秒级恢复全局对局与所有智能体的令牌。智能体无需重新入座，直接执行 `arena wait` 即可无缝接上当前对局！
+> 中途关闭服务后，再次启动会从 `data/room_state.json` 恢复当前对局与令牌。`arena watch` 会在断线后自动重连；收到 42/43 后交给 Agent 处理，再运行 `arena watch`。换局后需要执行新席位的自举命令。
 
 控制台“房间设置”可以关闭或开启未点名行动（默认关闭），并设置事件按回合数或秒数滚动隐藏；对应输入留空表示不过期。
+
+控制台还支持剧本与席位编辑、阵营消息、秘密投票与数值决策、回合流程编排、存档回放和视角导出。操作与接口见 [主持人操作手册](docs/features.md)，示例剧本见 [多方评审议会](templates/scenarios/discussion.json)。
 
 #### 也可以直接在聊天对话中发送一键自举口令：
 在智能体对话框（如 Claude Code / ZCode）中直接发给它一句话：

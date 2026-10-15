@@ -13,7 +13,7 @@
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #ef4444;
-  --purple: #8b5cf6;
+  --purple: #a78bfa;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -53,7 +53,7 @@ body {
 }
 
 .logo-badge {
-  background: linear-gradient(135deg, var(--primary), var(--accent));
+  background: linear-gradient(135deg, var(--primary), #0e7490);
   color: white;
   font-weight: 700;
   font-size: 12px;
@@ -355,14 +355,14 @@ input:focus, select:focus, textarea:focus {
 .btn-primary { background-color: var(--primary); color: white; }
 .btn-primary:hover { background-color: var(--primary-hover); }
 
-.btn-action { background: linear-gradient(135deg, var(--primary), var(--purple)); color: white; }
+.btn-action { background: linear-gradient(135deg, var(--primary), #7c3aed); color: white; }
 .btn-action:hover { opacity: 0.9; }
 
 .btn-secondary { background-color: #272d3b; color: var(--text-main); }
 .btn-secondary:hover { background-color: #313849; }
 
 .btn-danger { background-color: rgba(239, 68, 68, 0.2); color: var(--danger); border: 1px solid var(--danger); }
-.btn-danger:hover { background-color: var(--danger); color: white; }
+.btn-danger:hover { background-color: #b91c1c; color: white; }
 
 .w-100 { width: 100%; }
 .flex-1 { flex: 1; }
@@ -417,6 +417,13 @@ button:disabled, fieldset:disabled { opacity: 0.6; cursor: wait; }
 .seat-actions, .template-actions { margin-top: 10px; }
 .pending-action { margin-top: 10px; padding: 10px; background: var(--bg-input); border-radius: 4px; font-size: 12px; line-height: 1.7; }
 .pending-action .btn { margin-top: 6px; }
+.seat-listener-hint { color: var(--text-muted); font-size: 12px; line-height: 1.6; padding: 12px; border-bottom: 1px solid var(--border); }
+.seat-listener-hint code { color: var(--text-main); }
+.connection-status { margin-top: 5px; }
+.connection-listening { color: var(--success); }
+.connection-recent { color: var(--text-main); }
+.connection-offline, .countdown-expired { color: var(--warning); }
+.action-countdown { font-variant-numeric: tabular-nums; }
 .result-data { margin-top: 8px; font-size: 13px; color: var(--accent); overflow-wrap: anywhere; }
 .flow-controls { flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .flow-steps { list-style: none; padding: 0; margin-bottom: 14px; }

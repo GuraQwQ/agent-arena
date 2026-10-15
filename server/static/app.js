@@ -17,12 +17,14 @@ let replayData = null;
 let replayPosition = 0;
 let replayTimer = null;
 let replayLoadSerial = 0;
+let snapshotReceivedAt = Date.now();
 const ADMIN_TOKEN_KEY = "arena_admin_token";
 const ACTION_NAMES = { ACT: "通用行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "选择", NUMBER: "数值" };
 const SCOPE_NAMES = { PUBLIC: "全员公开", PRIVATE: "指定席位", GROUP: "指定阵营", HOST_ONLY: "仅主持人" };
 
 // 初始化连接
 window.addEventListener("DOMContentLoaded", async () => {
+  setInterval(updateSeatIndicators, 1000);
   document.addEventListener("input", (event) => {
     if (event.target.matches("input, textarea, select")) event.target.dataset.dirty = "true";
     if (event.target.closest("#flow-step-form")) flowDraftDirty = true;
@@ -137,6 +139,7 @@ function connectSSE() {
 // 渲染快照
 function renderSnapshot(data) {
   latestSnapshot = data;
+  snapshotReceivedAt = Date.now();
   currentPhase = data.phase || "准备中";
   document.getElementById("current-phase").textContent = currentPhase;
   syncInput("input-round", data.round_num || 1);
@@ -180,10 +183,10 @@ function renderSeatsList(seats) {
     let statusText = "空闲";
     if (s.status === "THINKING") {
       badgeClass = "badge-thinking";
-      statusText = "思考行动中";
+      statusText = "待提交行动";
     } else if (s.status === "WAITING") {
       badgeClass = "badge-waiting";
-      statusText = "挂起等待中";
+      statusText = "监听等待中";
     }
 
     return `
@@ -197,8 +200,10 @@ function renderSeatsList(seats) {
           <div>阵营: <strong>${escapeHtml(s.group_id || "未分组")}</strong></div>
           <div>模型: <code>${escapeHtml(s.model)}</code></div>
           <div>环境: <span>${escapeHtml(s.harness)}</span></div>
+          <div class="connection-status" data-seat-connection="${s.seat_id}"></div>
+          <div data-seat-seen="${s.seat_id}"></div>
         </div>
-        ${action ? `<div class="pending-action"><strong>${escapeHtml(ACTION_NAMES[action.action_type] || action.action_type)}</strong> · ${escapeHtml(SCOPE_NAMES[action.result_scope] || action.result_scope || "全员公开")}<div>截止 ${new Date(action.deadline * 1000).toLocaleTimeString()}</div><button class="btn btn-secondary btn-sm w-100" onclick="cancelAction(${s.seat_id})">取消待办行动</button></div>` : ""}
+        ${action ? `<div class="pending-action"><strong>${escapeHtml(ACTION_NAMES[action.action_type] || action.action_type)}</strong> · ${escapeHtml(SCOPE_NAMES[action.result_scope] || action.result_scope || "全员公开")}<div>截止 ${new Date(action.deadline * 1000).toLocaleTimeString()}</div><div class="action-countdown" data-action-countdown="${s.seat_id}"></div><button class="btn btn-secondary btn-sm w-100" onclick="cancelAction(${s.seat_id})">取消待办行动</button></div>` : ""}
         <div class="form-row seat-actions"><button class="btn btn-secondary btn-sm flex-1" onclick="editSeat(${s.seat_id})">编辑</button><button class="btn btn-danger btn-sm" onclick="removeSeat(${s.seat_id})">移除</button></div>
         <div style="margin-top: 10px;">
           <button class="btn btn-secondary btn-sm w-100" onclick="copyBootstrapCmd(${s.seat_id})">
@@ -208,6 +213,33 @@ function renderSeatsList(seats) {
       </div>
     `;
   }).join("");
+  updateSeatIndicators();
+}
+
+function updateSeatIndicators() {
+  const elapsed = Math.max(0, Math.floor((Date.now() - snapshotReceivedAt) / 1000));
+  for (const node of document.querySelectorAll("[data-seat-connection]")) {
+    const seat = currentSeats[node.dataset.seatConnection];
+    if (!seat) continue;
+    const seconds = seat.seconds_since_seen === null || seat.seconds_since_seen === undefined ? null : seat.seconds_since_seen + elapsed;
+    const status = seat.connection_status === "RECENT" && seconds > 75 ? "OFFLINE" : seat.connection_status || "NEVER";
+    const labels = { NEVER: "未接入", LISTENING: "正在监听服务端", RECENT: "最近有服务请求", OFFLINE: "超过 75 秒未活动" };
+    node.textContent = `连接：${labels[status] || status}`;
+    node.className = `connection-status connection-${status.toLowerCase()}`;
+  }
+  for (const node of document.querySelectorAll("[data-seat-seen]")) {
+    const seat = currentSeats[node.dataset.seatSeen];
+    const seconds = seat?.seconds_since_seen;
+    node.textContent = seconds === null || seconds === undefined ? "最近请求：尚无记录" : `最近请求：${seconds + elapsed} 秒前`;
+  }
+  for (const node of document.querySelectorAll("[data-action-countdown]")) {
+    const action = latestSnapshot?.active_actions?.[node.dataset.actionCountdown];
+    if (!action) continue;
+    const paused = latestSnapshot?.flow?.status === "PAUSED";
+    const seconds = Math.ceil(action.deadline - Date.now() / 1000);
+    node.textContent = paused ? "流程已暂停，截止时间冻结" : seconds > 0 ? `剩余 ${seconds} 秒` : "已超时，等待服务端处理";
+    node.classList.toggle("countdown-expired", !paused && seconds <= 0);
+  }
 }
 
 function copyBootstrapCmd(seatId) {
@@ -218,7 +250,7 @@ function copyBootstrapCmd(seatId) {
   const bootstrapUrl = `${window.location.origin}/bootstrap/${seatId}?claim_token=${encodeURIComponent(seat.claim_token)}`;
   const cmd = `python -c "import urllib.request as u; exec(u.urlopen('${bootstrapUrl}').read().decode('utf-8'))"`;
   navigator.clipboard.writeText(cmd).then(() => {
-    alert(`已复制 ${seatId}号位 启动命令！\n\n直接在终端运行，或在聊天中发送给 Agent 执行即可：\n${cmd}`);
+    alert(`已复制 ${seatId}号位 启动命令！\n\n直接在终端运行，或在聊天中发送给 Agent 执行即可：\n${cmd}\n\n接入后运行 arena watch 持续监听，超时继续等待，断线自动重连。`);
   }).catch(() => {
     prompt("请手动复制启动命令:", cmd);
   });
@@ -781,9 +813,7 @@ async function applyScenario(event) {
   const fields = document.getElementById("scenario-fields");
   fields.disabled = true;
   try {
-    const scenario = await adminRequest("/api/admin/scenario", undefined, "GET");
-    scenario.title = document.getElementById("scenario-title").value.trim();
-    scenario.description = document.getElementById("scenario-description").value;
+    const scenario = await readScenarioDraft();
     await adminRequest("/api/admin/scenario", scenario);
     clearDirty(["scenario-title", "scenario-description", "input-round"]);
     showNotice("剧本已应用，新局已开启");
@@ -795,9 +825,17 @@ async function applyScenario(event) {
 }
 
 async function exportScenario() {
-  const scenario = await adminRequest("/api/admin/scenario", undefined, "GET");
+  const scenario = await readScenarioDraft();
   downloadJSON(scenario, "arena-scenario.json");
   showNotice("剧本模板已导出");
+}
+
+async function readScenarioDraft() {
+  const scenario = await adminRequest("/api/admin/scenario", undefined, "GET");
+  scenario.title = document.getElementById("scenario-title").value.trim();
+  scenario.description = document.getElementById("scenario-description").value;
+  scenario.flow_steps = structuredClone(flowDraft);
+  return scenario;
 }
 
 async function importScenario(event) {

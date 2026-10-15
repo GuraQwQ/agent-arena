@@ -51,7 +51,7 @@ def simulate_agent(seat: int, name: str, model: str, claim_token: str = ""):
     turn_count = 0
     while True:
         print(f"[{name}] 进入长轮询挂起监听...")
-        code, out, _ = run_cmd(agent_dir, ["wait", "--timeout", "30"])
+        code, out, _ = run_cmd(agent_dir, ["watch", "--timeout", "30"])
 
         if code == 42:
             turn_count += 1

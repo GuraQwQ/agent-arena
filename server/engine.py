@@ -424,7 +424,8 @@ class ArenaEngine:
             return
         step = self.flow.steps[self.flow.index]
         self.phase, self.round_num = step.phase, step.round_num
-        self.record_event("PHASE_CHANGE", f"【流程阶段】{step.phase}", f"第 {self.flow.index + 1} 步 · {step.mode}")
+        mode_name = {"SEQUENTIAL": "依次行动", "SIMULTANEOUS": "同时决策", "MANUAL": "主持人裁决"}[step.mode]
+        self.record_event("PHASE_CHANGE", f"【流程阶段】{step.phase}", f"第 {self.flow.index + 1} 步 · {mode_name}")
         self.flow.pending_seats = list(step.target_seats) if step.mode != "MANUAL" else []
         if step.mode == "MANUAL":
             self.flow.status = "AWAITING_HOST"
@@ -666,7 +667,7 @@ class ArenaEngine:
         self.tick()
         seat = self.seats[seat_id]
         seat.last_seen = time.time()
-        seat.status = "WAITING"
+        seat.status = "IDLE"
 
         # 1. 如果已有待办行动，立即返回 42 (ACTION_REQUIRED)
         action = self.active_actions.get(seat_id)
@@ -698,6 +699,8 @@ class ArenaEngine:
         wait_event = asyncio.Event()
         generation = self._reset_generation
         self._wait_events[seat_id] = wait_event
+        seat.status = "WAITING"
+        self.broadcast_host_update()
 
         try:
             await asyncio.wait_for(wait_event.wait(), timeout=timeout)
@@ -706,6 +709,9 @@ class ArenaEngine:
         finally:
             if self._wait_events.get(seat_id) is wait_event:
                 self._wait_events.pop(seat_id, None)
+            seat.status = "THINKING" if seat_id in self.active_actions else "IDLE"
+            seat.last_seen = time.time()
+            self.broadcast_host_update()
 
         seat.last_seen = time.time()
 
@@ -798,7 +804,10 @@ class ArenaEngine:
             "settings": self.settings.model_dump(),
             "flow": self.flow.model_dump(),
             "seats": {
-                sid: s.model_dump(exclude={"token"})
+                sid: {**s.model_dump(exclude={"token"}),
+                      "connection_status": "LISTENING" if sid in self._wait_events else
+                          "NEVER" if not s.last_seen else "RECENT" if now - s.last_seen <= 75 else "OFFLINE",
+                      "seconds_since_seen": max(0, int(now - s.last_seen)) if s.last_seen else None}
                 for sid, s in self.seats.items()
             },
             "active_actions": {sid: a.model_dump() for sid, a in self.active_actions.items()},

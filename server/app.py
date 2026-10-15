@@ -200,7 +200,7 @@ try:
     print(data["init_prompt"])
     print("-" * 60)
     print("⚡ 指引: 请立即以后台任务运行监听，并结束当前回合:")
-    print("   python agent.py wait")
+    print("   python agent.py watch")
     print("=" * 60)
 except Exception as e:
     print(f"❌ 自举装配失败: {{e}}")
@@ -561,4 +561,4 @@ if STATIC_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True, ws="none")

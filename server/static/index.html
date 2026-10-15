@@ -29,6 +29,7 @@
         <h2>智能体座次 (<span id="seat-count">0</span>)</h2>
         <button class="btn btn-secondary btn-sm" onclick="newSeat()">新增席位</button>
       </div>
+      <p class="seat-listener-hint">接入后运行 <code>arena watch</code> 持续监听，断线自动重连。连接状态反映服务端请求活动。</p>
       <details id="seat-editor" class="seat-editor">
         <summary>编辑席位</summary>
         <form id="seat-form" onsubmit="saveSeat(event)">

@@ -35,19 +35,27 @@ EXIT_ERROR = 1
 EXIT_CONN_FAIL = 2
 
 CONFIG_FILE = Path(".agent.json")
+EVENTS_FILE = Path("events.jsonl")
 DEFAULT_SERVER = "http://127.0.0.1:8000"
 
 
 def load_config() -> dict:
-    cfg = {}
-    if CONFIG_FILE.exists():
-        try:
-            cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            cfg = {}
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            raise ValueError("配置内容必须是 JSON 对象")
+    except FileNotFoundError:
+        cfg = {}
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"❌ 无法读取配置 {CONFIG_FILE}: {exc}")
+        sys.exit(EXIT_ERROR)
     cfg["server"] = os.environ.get("ARENA_SERVER") or cfg.get("server") or DEFAULT_SERVER
     if os.environ.get("ARENA_SEAT"):
-        cfg["seat"] = int(os.environ["ARENA_SEAT"])
+        try:
+            cfg["seat"] = int(os.environ["ARENA_SEAT"])
+        except ValueError:
+            print("❌ ARENA_SEAT 必须是整数座次号")
+            sys.exit(EXIT_ERROR)
     return cfg
 
 
@@ -91,6 +99,46 @@ def api_request(cfg: dict, method: str, path: str, body: dict = None, params: di
         sys.exit(EXIT_CONN_FAIL)
 
 
+def persist_events(room_id: str, events: list) -> list:
+    """确认接收前写入日志，重试去重并修复中断留下的最后半行。"""
+    if not events:
+        return []
+    fresh = []
+    with EVENTS_FILE.open("a+b") as handle:
+        handle.seek(0)
+        lines = handle.readlines()
+        known = set()
+        valid_end = 0
+        missing_newline = False
+        for index, line in enumerate(lines):
+            try:
+                item = json.loads(line.decode("utf-8"))
+                if not isinstance(item, dict) or not isinstance(item.get("seq"), int) or not item.get("room_id"):
+                    raise ValueError("缺少对局编号或事件序号")
+            except (UnicodeError, ValueError) as exc:
+                if index == len(lines) - 1 and not line.endswith(b"\n"):
+                    break
+                raise ValueError(f"事件日志第 {index + 1} 行损坏：{exc}") from exc
+            known.add((item["room_id"], item["seq"]))
+            valid_end += len(line)
+            missing_newline = not line.endswith(b"\n")
+        handle.seek(valid_end)
+        handle.truncate()
+        if missing_newline:
+            handle.write(b"\n")
+        for event in events:
+            key = (room_id, event["seq"])
+            if key in known:
+                continue
+            record = dict(event, room_id=room_id)
+            handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+            known.add(key)
+            fresh.append(event)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return fresh
+
+
 def cmd_join(args):
     cfg = load_config()
     if args.server:
@@ -120,7 +168,7 @@ def cmd_join(args):
     print(f"座次: {res['seat_id']}号位 | 昵称: {res['name']} | 角色: {res['role']}")
     print(f"当前阶段: {res['phase']}")
     print("=" * 60)
-    print("💡 下一步: 请用后台任务执行: python agent.py wait")
+    print("💡 下一步: 请用后台任务执行: python agent.py watch")
     sys.exit(EXIT_OK)
 
 
@@ -131,10 +179,19 @@ def receive_update(timeout: int):
         print("❌ 未入座或缺少令牌，请先执行主持人提供的自举命令")
         sys.exit(EXIT_ERROR)
 
-    res = api_request(cfg, "GET", "/api/player/wait", params={"seat_id": seat_id, "timeout": timeout})
+    res = api_request(cfg, "GET", "/api/player/wait", params={"seat_id": seat_id, "timeout": timeout}, timeout=timeout + 15)
     code = res.get("code", 0)
     events = res.get("events", res.get("recent_events", []))
-    for event in events:
+    try:
+        fresh_events = persist_events(res["room_id"], events) if events else []
+    except (OSError, ValueError) as exc:
+        print(f"❌ 事件日志未能保存，本次不确认接收: {exc}")
+        sys.exit(EXIT_ERROR)
+    cfg = load_config()
+    previous_cfg = dict(cfg)
+    if res.get("room_id"):
+        cfg["room_id"] = res["room_id"]
+    for event in fresh_events:
         print(f"#{event['seq']} {event['title']}: {event['content']}")
 
     if code == EXIT_ACT:
@@ -156,19 +213,18 @@ def receive_update(timeout: int):
         print("⚡ 行动方式:")
         print("  1. 将你的陈词/决策写入本地 action.txt")
         print("  2. 执行提交: python agent.py act --reason \"仅主持人可见的深层动机\"")
-        print("  3. 提交完成后立即重启后台监听: python agent.py wait")
+        print("  3. 提交完成后立即重启后台监听: python agent.py watch")
         print("=" * 60)
 
     elif code == EXIT_OBSERVE:
         print("=" * 60)
         print("💭 【收到新事件更新 (仅观察)】")
         print("-" * 60)
-        print("💡 指引: 请花 1 分钟简短更新本地 memory.md 的推理笔记，不要行动，立即重启 wait。")
+        print("💡 指引: 请花 1 分钟简短更新本地 memory.md 的推理笔记，不要行动，立即重启 watch。")
         print("=" * 60)
     sys.stdout.flush()
-    if res.get("room_id"):
-        cfg["room_id"] = res["room_id"]
-    save_config(cfg)
+    if cfg != previous_cfg:
+        save_config(cfg)
     if events:
         api_request(cfg, "POST", "/api/player/ack", body={
             "seat_id": seat_id, "room_id": res["room_id"], "seq": events[-1]["seq"]
@@ -177,7 +233,24 @@ def receive_update(timeout: int):
 
 
 def cmd_wait(args):
-    sys.exit(receive_update(args.timeout or 50))
+    follow = args.command == "watch" or args.follow
+    delay = 1
+    try:
+        while True:
+            try:
+                code = receive_update(args.timeout or 50)
+            except SystemExit as exc:
+                if not follow or exc.code != EXIT_CONN_FAIL:
+                    raise
+                print(f"连接中断，{delay} 秒后重新连接。", flush=True)
+                time.sleep(delay)
+                delay = min(delay * 2, 15)
+                continue
+            delay = 1
+            if not follow or code in (EXIT_ACT, EXIT_OBSERVE):
+                sys.exit(code)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 def cmd_act(args):
@@ -230,13 +303,18 @@ def cmd_act(args):
     payload["request_id"] = args.request_id or cfg.get("pending_action", {}).get("request_id") or (
         pending_submission.get("request_id") if previous_payload == payload else uuid.uuid4().hex
     )
+    cfg = load_config()
     cfg["pending_submission"] = payload
     save_config(cfg)
 
     res = api_request(cfg, "POST", "/api/player/act", body=payload)
-    cfg.pop("pending_action", None)
-    cfg.pop("pending_submission", None)
-    save_config(cfg)
+    cfg = load_config()
+    previous_cfg = dict(cfg)
+    for key in ("pending_action", "pending_submission"):
+        if cfg.get(key, {}).get("request_id") == payload["request_id"]:
+            cfg.pop(key)
+    if cfg != previous_cfg:
+        save_config(cfg)
     print(f"✅ 行动已成功提交！(事件序列号: #{res.get('event_seq')})")
 
     # 归档 action.txt
@@ -246,7 +324,7 @@ def cmd_act(args):
         except Exception:
             pass
 
-    print("💡 提示: 请务必重新运行后台监听任务: python agent.py wait")
+    print("💡 提示: 请务必重新运行后台监听任务: python agent.py watch")
     sys.exit(EXIT_OK)
 
 
@@ -296,8 +374,9 @@ def main():
     p_join.add_argument("--claim-token", type=str, help="主持人发放的席位认领令牌")
 
     # wait
-    p_wait = subparsers.add_parser("wait", help="后台长轮询挂起等待行动 (退出码 42/43)")
+    p_wait = subparsers.add_parser("wait", aliases=["watch"], help="后台长轮询挂起等待行动 (退出码 42/43)")
     p_wait.add_argument("--timeout", type=int, default=50, help="单次挂起超时秒数")
+    p_wait.add_argument("--follow", action="store_true", help="超时续接，断线自动重连，收到行动或观察事件后退出；watch 默认启用")
 
     # act
     p_act = subparsers.add_parser("act", help="提交正式行动")
@@ -320,7 +399,7 @@ def main():
     args = parser.parse_args()
     if args.command == "join":
         cmd_join(args)
-    elif args.command == "wait":
+    elif args.command in ("wait", "watch"):
         cmd_wait(args)
     elif args.command == "act":
         cmd_act(args)
