@@ -6,5 +6,10 @@
     {"seat_id": 2, "name": "反方评审", "role": "质疑者", "group_id": null, "init_prompt": "寻找方案的边界条件和反例。"},
     {"seat_id": 3, "name": "综合评审", "role": "协调者", "group_id": null, "init_prompt": "比较观点，提出最小可执行建议。"}
   ],
-  "settings": {"allow_free_actions": false, "history_rounds": null, "history_seconds": null}
+  "settings": {"allow_free_actions": false, "history_rounds": null, "history_seconds": null},
+  "flow_steps": [
+    {"phase": "独立分析", "mode": "SIMULTANEOUS", "target_seats": [1, 2, 3], "action_type": "ACT", "prompt": "独立分析主持人给出的议题。全部提交后公开。", "timeout": 300},
+    {"phase": "交叉评审", "mode": "SEQUENTIAL", "target_seats": [1, 2, 3], "action_type": "SPEAK", "prompt": "阅读各方观点并给出评审。", "timeout": 300},
+    {"phase": "主持人总结", "mode": "MANUAL"}
+  ]
 }

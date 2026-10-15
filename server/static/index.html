@@ -123,6 +123,44 @@
         </div>
       </div>
 
+      <details class="control-card" id="flow-panel" open>
+        <summary>回合流程 · <span id="flow-status">未启动</span></summary>
+        <p class="field-hint" id="flow-progress">添加步骤后可预览并启动流程。</p>
+        <div class="form-row flow-controls">
+          <button id="flow-pause" class="btn btn-secondary btn-sm" onclick="operateFlow('pause')" disabled>暂停</button>
+          <button id="flow-resume" class="btn btn-secondary btn-sm" onclick="operateFlow('resume')" disabled>继续</button>
+          <button id="flow-advance" class="btn btn-primary btn-sm" onclick="operateFlow('advance')" disabled>裁决后继续</button>
+          <button id="flow-stop" class="btn btn-danger btn-sm" onclick="operateFlow('stop')" disabled>停止流程</button>
+        </div>
+        <ol id="flow-steps" class="flow-steps"></ol>
+        <details id="flow-step-editor">
+          <summary id="flow-editor-heading">新增步骤</summary>
+          <form id="flow-step-form" onsubmit="saveFlowStep(event)">
+            <div class="form-group"><label for="flow-phase">阶段名称</label><input id="flow-phase" required placeholder="例如：同时秘密投票"></div>
+            <div class="form-row">
+              <div class="form-group flex-1"><label for="flow-round">回合</label><input id="flow-round" type="number" min="1" value="1" required></div>
+              <div class="form-group flex-1"><label for="flow-mode">推进方式</label><select id="flow-mode" onchange="updateFlowFields()"><option value="SEQUENTIAL">依次行动</option><option value="SIMULTANEOUS">同时决策</option><option value="MANUAL">主持人裁决</option></select></div>
+            </div>
+            <div id="flow-action-fields">
+              <div class="form-group"><label for="flow-targets">参与席位（可多选）</label><select id="flow-targets" multiple size="4"></select><p class="field-hint">依次行动按上方步骤预览中的席位顺序进行。</p></div>
+              <div class="form-row">
+                <div class="form-group flex-1"><label for="flow-type">行动类型</label><select id="flow-type" onchange="updateFlowFields()"><option value="ACT">通用行动</option><option value="SPEAK">发言</option><option value="VOTE">投票</option><option value="CHOOSE">选择</option><option value="NUMBER">数值</option></select></div>
+                <div class="form-group flex-1"><label for="flow-scope">结果可见范围</label><select id="flow-scope" onchange="updateFlowFields()"><option value="PUBLIC">全员公开</option><option value="PRIVATE">指定席位</option><option value="GROUP">指定阵营</option><option value="HOST_ONLY">仅主持人</option></select></div>
+              </div>
+              <div class="form-group" id="flow-options-group" hidden><label for="flow-options">候选项（每行一个）</label><textarea id="flow-options" rows="3"></textarea></div>
+              <div class="form-row" id="flow-number-group" hidden><div class="form-group flex-1"><label for="flow-min">最小值</label><input id="flow-min" type="number" step="any" placeholder="不限"></div><div class="form-group flex-1"><label for="flow-max">最大值</label><input id="flow-max" type="number" step="any" placeholder="不限"></div></div>
+              <div class="form-group" id="flow-recipient-group" hidden><label for="flow-recipient">结果接收席位</label><select id="flow-recipient"><option value="">-- 选择座次 --</option></select></div>
+              <div class="form-group" id="flow-team-group" hidden><label for="flow-team">结果接收阵营</label><select id="flow-team"><option value="">-- 选择阵营 --</option></select></div>
+              <div class="form-group"><label for="flow-prompt">行动要求</label><textarea id="flow-prompt" rows="3"></textarea></div>
+              <div class="form-group"><label for="flow-timeout">每个行动限时（秒）</label><input id="flow-timeout" type="number" min="1" value="60" required></div>
+            </div>
+            <div class="form-row"><button class="btn btn-primary flex-1" type="submit">保存步骤</button><button class="btn btn-secondary" type="button" onclick="resetFlowEditor()">取消编辑</button></div>
+          </form>
+        </details>
+        <p class="field-hint flow-start-hint">预览确认后启动。同时决策会在收齐或截止后统一公布结果。</p>
+        <button class="btn btn-action w-100" id="flow-start" onclick="startFlow()">启动以上流程</button>
+      </details>
+
       <!-- 信息与私信下发 -->
       <div class="control-card">
         <h3>3. 下发公共剧情 / 定向私信</h3>

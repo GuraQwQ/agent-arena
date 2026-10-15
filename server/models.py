@@ -64,6 +64,7 @@ class ActionRequest(BaseModel):
     result_recipients: Optional[List[int]] = None
     min_value: Optional[float] = Field(None, allow_inf_nan=False)
     max_value: Optional[float] = Field(None, allow_inf_nan=False)
+    flow_index: Optional[int] = None
 
 
 class ActionSubmission(BaseModel):
@@ -119,11 +120,50 @@ class SeatDefinition(BaseModel):
     init_prompt: str = ""
 
 
+class FlowStep(BaseModel):
+    phase: str = Field(..., min_length=1)
+    round_num: int = Field(1, ge=1)
+    mode: Literal["SEQUENTIAL", "SIMULTANEOUS", "MANUAL"] = "SEQUENTIAL"
+    target_seats: List[int] = Field(default_factory=list, max_length=64)
+    action_type: Literal["ACT", "SPEAK", "VOTE", "CHOOSE", "NUMBER"] = "ACT"
+    prompt: str = ""
+    options: List[str] = Field(default_factory=list)
+    timeout: int = Field(60, ge=1, le=86400)
+    result_scope: VisibilityScope = VisibilityScope.PUBLIC
+    result_target_seat: Optional[int] = None
+    result_group_id: Optional[str] = None
+    min_value: Optional[float] = Field(None, allow_inf_nan=False)
+    max_value: Optional[float] = Field(None, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def check_targets(self):
+        if self.mode != "MANUAL" and not self.target_seats:
+            raise ValueError("自动行动步骤必须选择目标席位")
+        if len(set(self.target_seats)) != len(self.target_seats):
+            raise ValueError("流程目标席位不能重复")
+        return self
+
+
+class FlowPlan(BaseModel):
+    steps: List[FlowStep] = Field(..., min_length=1, max_length=100)
+
+
+class FlowState(BaseModel):
+    steps: List[FlowStep] = Field(default_factory=list)
+    index: int = 0
+    status: Literal["IDLE", "RUNNING", "PAUSED", "AWAITING_HOST", "COMPLETED"] = "IDLE"
+    pending_seats: List[int] = Field(default_factory=list)
+    paused_at: Optional[float] = None
+    resume_status: str = "RUNNING"
+    sealed_results: List[dict] = Field(default_factory=list)
+
+
 class Scenario(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     description: str = ""
     seats: List[SeatDefinition] = Field(..., min_length=1, max_length=64)
     settings: ArenaSettings = Field(default_factory=ArenaSettings)
+    flow_steps: List[FlowStep] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
     def unique_seats(self):
@@ -148,6 +188,7 @@ class RoomSnapshot(BaseModel):
     last_seen_seqs: Dict[int, int] = Field(default_factory=dict)
     settings: ArenaSettings = Field(default_factory=ArenaSettings)
     receipts: Dict[str, dict] = Field(default_factory=dict)
+    flow: FlowState = Field(default_factory=FlowState)
 
 
 class EventAcknowledgement(BaseModel):

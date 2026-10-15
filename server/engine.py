@@ -13,7 +13,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from models import ActionRequest, ArenaSettings, Event, RoomSnapshot, Scenario, Seat, SeatDefinition, VisibilityScope
+from models import ActionRequest, ArenaSettings, Event, FlowState, FlowStep, RoomSnapshot, Scenario, Seat, SeatDefinition, VisibilityScope
 from archives import ArchiveStore
 from storage import write_json
 
@@ -65,6 +65,7 @@ class ArenaEngine:
         self._state_lock = threading.RLock()
         self._changing = False
         self.receipts = {}
+        self.flow = FlowState()
         self._reset_generation = 0
         
         # 座次映射: seat_id -> Seat
@@ -116,7 +117,7 @@ class ArenaEngine:
             round_num=self.round_num, seq_counter=self._seq_counter, seats=self.seats,
             events=self.events, active_actions=self.active_actions,
             last_seen_seqs=self.last_seen_seqs, settings=self.settings, receipts=self.receipts,
-            scenario_description=self.scenario_description
+            scenario_description=self.scenario_description, flow=self.flow
         )
 
     def _apply_snapshot(self, snapshot: RoomSnapshot):
@@ -132,6 +133,7 @@ class ArenaEngine:
         self.last_seen_seqs = snapshot.last_seen_seqs
         self.settings = snapshot.settings
         self.receipts = snapshot.receipts
+        self.flow = snapshot.flow
 
     def save_snapshot(self):
         """原子落盘保存当前对局全量快照"""
@@ -239,11 +241,13 @@ class ArenaEngine:
         return Scenario(
             title=self.room_title, description=self.scenario_description,
             seats=[SeatDefinition.model_validate(seat.model_dump()) for seat in self.seats.values()],
-            settings=self.settings
+            settings=self.settings, flow_steps=self.flow.steps
         )
 
     @mutating
     def update_seat(self, definition: SeatDefinition):
+        if self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
+            raise ValueError("请先停止流程，再调整席位配置")
         seat = self.seats.get(definition.seat_id)
         if seat is None:
             if len(self.seats) >= 64:
@@ -257,6 +261,8 @@ class ArenaEngine:
 
     @mutating
     def remove_seat(self, seat_id: int):
+        if self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
+            raise ValueError("请先停止流程，再调整席位配置")
         if seat_id not in self.seats:
             raise ValueError("席位不存在")
         if len(self.seats) == 1:
@@ -276,6 +282,7 @@ class ArenaEngine:
         self.last_seen_seqs = {}
         for seat in scenario.seats:
             self.update_seat(seat)
+        self.flow = FlowState(steps=scenario.flow_steps)
 
     def _recipients(self, scope, from_seat=None, to_seat=None, group_id=None):
         if scope == VisibilityScope.PUBLIC:
@@ -292,6 +299,8 @@ class ArenaEngine:
 
     @mutating
     def advance_phase(self, phase: Optional[str], round_num: Optional[int]):
+        if self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
+            raise ValueError("请先停止自动流程，再手动变更阶段")
         self.phase = phase or self.phase
         self.round_num = round_num if round_num is not None else self.round_num
         self.record_event("PHASE_CHANGE", f"【阶段变更】进入阶段: {self.phase}", f"主持人已将当前场景切换为: {self.phase}")
@@ -394,17 +403,107 @@ class ArenaEngine:
         return result
 
     @mutating
-    def dispatch_action(self, target_seat: int, action_type: str, prompt: str, options: Optional[List[str]] = None, timeout: int = 60,
-                        result_scope: VisibilityScope = VisibilityScope.PUBLIC, result_target_seat: Optional[int] = None,
-                        result_group_id: Optional[str] = None, min_value: Optional[float] = None, max_value: Optional[float] = None) -> ActionRequest:
-        """主持人向指定 Agent 下达行动命令 (点名)"""
+    def start_flow(self, steps: List[FlowStep]):
+        if self.active_actions or self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
+            raise ValueError("请先完成或停止现有行动流程")
+        if not steps:
+            raise ValueError("请至少添加一个流程步骤")
+        for step in steps:
+            if step.mode == "MANUAL":
+                continue
+            for seat_id in step.target_seats:
+                self._validate_action(seat_id, step.action_type, step.options, step.timeout,
+                    step.result_scope, step.result_target_seat, step.result_group_id, step.min_value, step.max_value)
+        self.flow = FlowState(steps=[step.model_copy(deep=True) for step in steps], status="RUNNING")
+        self._start_flow_step()
+
+    def _start_flow_step(self):
+        if self.flow.index >= len(self.flow.steps):
+            self.flow.status = "COMPLETED"
+            self.record_event("FLOW_COMPLETE", "【流程完成】", "全部步骤已完成")
+            return
+        step = self.flow.steps[self.flow.index]
+        self.phase, self.round_num = step.phase, step.round_num
+        self.record_event("PHASE_CHANGE", f"【流程阶段】{step.phase}", f"第 {self.flow.index + 1} 步 · {step.mode}")
+        self.flow.pending_seats = list(step.target_seats) if step.mode != "MANUAL" else []
+        if step.mode == "MANUAL":
+            self.flow.status = "AWAITING_HOST"
+            return
+        targets = step.target_seats if step.mode == "SIMULTANEOUS" else step.target_seats[:1]
+        for seat_id in targets:
+            self._dispatch_flow_action(seat_id)
+
+    def _dispatch_flow_action(self, seat_id: int):
+        step = self.flow.steps[self.flow.index]
+        fields = step.model_dump(exclude={"phase", "round_num", "mode", "target_seats"})
+        self.dispatch_action(seat_id, flow_index=self.flow.index, **fields)
+
+    def _progress_flow(self):
+        if self.flow.status != "RUNNING":
+            return
+        step = self.flow.steps[self.flow.index]
+        if self.flow.pending_seats:
+            next_seat = self.flow.pending_seats[0]
+            if step.mode == "SEQUENTIAL" and next_seat not in self.active_actions:
+                self._dispatch_flow_action(next_seat)
+            return
+        # 发布新事件，确保已确认旧游标的玩家仍能收到同时行动的揭晓。
+        by_seq = {event.seq: event for event in self.events}
+        for result in self.flow.sealed_results:
+            source = by_seq[result["event_seq"]]
+            event = self.record_event("ACTION_RESULT", source.title.replace("行动提交", "结果揭晓"), source.content,
+                from_seat=source.from_seat, to_seat=result["to_seat"], group_id=result["group_id"],
+                scope=result["scope"], secret_reason=source.secret_reason, data=source.data)
+            event.recipient_seats = result["recipients"]
+        self.flow.sealed_results = []
+        self.flow.index += 1
+        self._start_flow_step()
+
+    @mutating
+    def control_flow(self, operation: str):
+        status = self.flow.status
+        now = time.time()
+        if operation == "pause" and status in {"RUNNING", "AWAITING_HOST"}:
+            self.flow.resume_status = status
+            self.flow.status = "PAUSED"
+            self.flow.paused_at = now
+        elif operation == "resume" and status == "PAUSED":
+            elapsed = now - self.flow.paused_at
+            for action in self.active_actions.values():
+                if action.flow_index is not None:
+                    action.deadline += elapsed
+            self.flow.status = self.flow.resume_status
+            self.flow.paused_at = None
+            self._progress_flow()
+        elif operation == "advance" and status == "AWAITING_HOST":
+            self.flow.index += 1
+            self.flow.status = "RUNNING"
+            self._start_flow_step()
+        elif operation == "stop" and status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
+            self.flow.status = "IDLE"
+            self.flow.pending_seats = []
+            self.flow.sealed_results = []
+            self.flow.paused_at = None
+            for seat_id, action in list(self.active_actions.items()):
+                if action.flow_index is not None:
+                    self.cancel_action(seat_id, "主持人停止流程")
+        else:
+            raise ValueError("当前流程状态不支持该操作")
+        self.record_event("FLOW_CONTROL", "【流程控制】", {"pause": "已暂停", "resume": "已继续", "advance": "裁决完成，继续下一步", "stop": "已停止"}[operation])
+
+    def tick(self):
+        now = time.time()
+        expired = [(sid, action.request_id) for sid, action in self.active_actions.items()
+                   if action.deadline <= now and not (action.flow_index is not None and self.flow.status == "PAUSED")]
+        for seat_id, request_id in expired:
+            current = self.active_actions.get(seat_id)
+            if current and current.request_id == request_id:
+                self.cancel_action(seat_id, "行动已超时，跳过该席位")
+
+    def _validate_action(self, target_seat, action_type, options, timeout, result_scope,
+                         result_target_seat, result_group_id, min_value, max_value):
         if target_seat not in self.seats:
             raise ValueError("目标席位不存在")
-        pending = self.active_actions.get(target_seat)
-        if pending and pending.deadline <= time.time():
-            self.cancel_action(target_seat, "行动已超时")
-        elif pending:
-            raise ValueError("该席位已有未完成行动")
         if timeout <= 0:
             raise ValueError("行动限时必须大于 0 秒")
         if action_type not in {"ACT", "SPEAK", "VOTE", "CHOOSE", "NUMBER"}:
@@ -417,6 +516,22 @@ class ArenaEngine:
             raise ValueError("请指定有效的私密结果接收席位")
         if result_scope == VisibilityScope.GROUP and not any(seat.group_id == result_group_id and result_group_id for seat in self.seats.values()):
             raise ValueError("请指定有效的结果接收阵营")
+
+    @mutating
+    def dispatch_action(self, target_seat: int, action_type: str, prompt: str, options: Optional[List[str]] = None, timeout: int = 60,
+                        result_scope: VisibilityScope = VisibilityScope.PUBLIC, result_target_seat: Optional[int] = None,
+                        result_group_id: Optional[str] = None, min_value: Optional[float] = None, max_value: Optional[float] = None,
+                        flow_index: Optional[int] = None) -> ActionRequest:
+        """主持人向指定 Agent 下达行动命令 (点名)"""
+        self._validate_action(target_seat, action_type, options, timeout, result_scope,
+                              result_target_seat, result_group_id, min_value, max_value)
+        if flow_index is None and self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
+            raise ValueError("自动流程运行期间请使用流程控制")
+        pending = self.active_actions.get(target_seat)
+        if pending and pending.deadline <= time.time():
+            self.cancel_action(target_seat, "行动已超时")
+        elif pending:
+            raise ValueError("该席位已有未完成行动")
         req_id = str(uuid.uuid4())[:8]
         req = ActionRequest(
             request_id=req_id,
@@ -429,7 +544,7 @@ class ArenaEngine:
             result_scope=result_scope, result_target_seat=result_target_seat,
             result_group_id=result_group_id,
             result_recipients=self._recipients(result_scope, target_seat, result_target_seat, result_group_id),
-            min_value=min_value, max_value=max_value
+            min_value=min_value, max_value=max_value, flow_index=flow_index
         )
         self.active_actions[target_seat] = req
         
@@ -462,6 +577,9 @@ class ArenaEngine:
         self.record_event("ACTION_CANCEL", f"【行动结束】{seat_id}号位", reason,
                           to_seat=seat_id, scope=VisibilityScope.PRIVATE,
                           data={"request_id": pending.request_id})
+        if pending.flow_index is not None and seat_id in self.flow.pending_seats:
+            self.flow.pending_seats.remove(seat_id)
+            self._progress_flow()
 
     @mutating
     def submit_action(self, seat_id: int, token: str, action_type: str, content: str, request_id: str, secret_reason: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> Event:
@@ -483,7 +601,7 @@ class ArenaEngine:
                 raise ValueError("行动编号或阶段已变更，请重新获取主持人指令")
             if pending.action_type != action_type:
                 raise ValueError("提交的动作类型与主持人指令不匹配")
-            if pending.deadline <= time.time():
+            if pending.deadline <= time.time() and not (pending.flow_index is not None and self.flow.status == "PAUSED"):
                 self.active_actions.pop(seat_id, None)
                 raise TimeoutError("行动已超过截止时间")
         elif not self.settings.allow_free_actions:
@@ -507,20 +625,28 @@ class ArenaEngine:
             self.seats[seat_id].status = "IDLE"
 
         # 记录行动事件
+        sealed = bool(pending and pending.flow_index is not None and self.flow.steps[pending.flow_index].mode == "SIMULTANEOUS")
         event = self.record_event(
             event_type="ACTION_SUBMIT",
             title=f"【行动提交】{seat_id}号位 完成行动 [{action_type}]",
             content=content,
             from_seat=seat_id,
-            scope=pending.result_scope if pending else VisibilityScope.PUBLIC,
+            scope=VisibilityScope.HOST_ONLY if sealed else pending.result_scope if pending else VisibilityScope.PUBLIC,
             to_seat=pending.result_target_seat if pending else None,
             group_id=pending.result_group_id if pending else None,
             secret_reason=secret_reason,
             data={**(data or {}), "action_type": action_type, "request_id": request_id}
         )
-        if pending:
+        if pending and not sealed:
             event.recipient_seats = pending.result_recipients
         self.receipts[receipt_key] = {"event_seq": event.seq, "payload": payload}
+        if pending and pending.flow_index is not None:
+            if sealed:
+                self.flow.sealed_results.append({"event_seq": event.seq, "scope": pending.result_scope,
+                    "to_seat": pending.result_target_seat, "group_id": pending.result_group_id,
+                    "recipients": pending.result_recipients})
+            self.flow.pending_seats.remove(seat_id)
+            self._progress_flow()
         self.broadcast_host_update()
         return event
 
@@ -537,16 +663,13 @@ class ArenaEngine:
         if not self.verify_token(seat_id, token):
             raise PermissionError("无效的座次令牌")
 
+        self.tick()
         seat = self.seats[seat_id]
         seat.last_seen = time.time()
         seat.status = "WAITING"
 
         # 1. 如果已有待办行动，立即返回 42 (ACTION_REQUIRED)
         action = self.active_actions.get(seat_id)
-        if action and action.deadline <= time.time():
-            self.active_actions.pop(seat_id, None)
-            action = None
-            seat.status = "IDLE"
         if action:
             seat.status = "THINKING"
             last_seq = self.last_seen_seqs.get(seat_id, 0)
@@ -594,10 +717,8 @@ class ArenaEngine:
             }
 
         # 4. 唤醒后再次检查行动指令
+        self.tick()
         action = self.active_actions.get(seat_id)
-        if action and action.deadline <= time.time():
-            self.active_actions.pop(seat_id, None)
-            action = None
         if action:
             seat.status = "THINKING"
             recent = self.filter_events_for_seat(seat_id, since_seq=self.last_seen_seqs.get(seat_id, 0))
@@ -652,6 +773,7 @@ class ArenaEngine:
         self._reset_generation += 1
         self.room_id = uuid.uuid4().hex
         self.receipts = {}
+        self.flow = FlowState()
         self.phase = "准备中"
         self.scenario_description = ""
         self.round_num = 1
@@ -674,6 +796,7 @@ class ArenaEngine:
             "phase": self.phase,
             "round_num": self.round_num,
             "settings": self.settings.model_dump(),
+            "flow": self.flow.model_dump(),
             "seats": {
                 sid: s.model_dump(exclude={"token"})
                 for sid, s in self.seats.items()

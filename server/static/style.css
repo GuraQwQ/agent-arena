@@ -418,6 +418,16 @@ button:disabled, fieldset:disabled { opacity: 0.6; cursor: wait; }
 .pending-action { margin-top: 10px; padding: 10px; background: var(--bg-input); border-radius: 4px; font-size: 12px; line-height: 1.7; }
 .pending-action .btn { margin-top: 6px; }
 .result-data { margin-top: 8px; font-size: 13px; color: var(--accent); overflow-wrap: anywhere; }
+.flow-controls { flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.flow-steps { list-style: none; padding: 0; margin-bottom: 14px; }
+.flow-step { border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; line-height: 1.6; }
+.flow-step:first-child { padding-top: 0; }
+.flow-step .form-row { flex-wrap: wrap; margin-top: 8px; gap: 5px; }
+.flow-step .field-hint { margin: 4px 0; }
+.flow-prompt { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
+.flow-start-hint { margin-top: 14px; }
+#flow-step-form { margin-top: 12px; }
+#flow-targets { min-height: 100px; }
 .seat-title, .seat-meta, .event-title { overflow-wrap: anywhere; }
 .seat-top { gap: 8px; align-items: flex-start; }
 .badge { flex-shrink: 0; }

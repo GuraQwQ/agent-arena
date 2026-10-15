@@ -8,6 +8,10 @@ let currentSeats = {};
 let currentPhase = "准备中";
 let activeMsgTab = "broadcast";
 let latestSnapshot = null;
+let flowDraft = [];
+let flowDraftRoom = null;
+let flowDraftDirty = false;
+let editingFlowStep = -1;
 const ADMIN_TOKEN_KEY = "arena_admin_token";
 const ACTION_NAMES = { ACT: "通用行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "选择", NUMBER: "数值" };
 const SCOPE_NAMES = { PUBLIC: "全员公开", PRIVATE: "指定席位", GROUP: "指定阵营", HOST_ONLY: "仅主持人" };
@@ -16,6 +20,7 @@ const SCOPE_NAMES = { PUBLIC: "全员公开", PRIVATE: "指定席位", GROUP: "�
 window.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("input", (event) => {
     if (event.target.matches("input, textarea, select")) event.target.dataset.dirty = "true";
+    if (event.target.closest("#flow-step-form")) flowDraftDirty = true;
   });
   try {
     if (await ensureAdminSession()) {
@@ -139,6 +144,7 @@ function renderSnapshot(data) {
   renderSeatsList(currentSeats);
   // 更新下拉框选项
   updateSeatSelects(currentSeats);
+  renderFlow(data.flow || {});
 
   // 渲染全量事件
   const container = document.getElementById("timeline-container");
@@ -215,7 +221,7 @@ function copyBootstrapCmd(seatId) {
 
 // 更新下拉框
 function updateSeatSelects(seats) {
-  for (const id of ["select-target-seat", "select-private-seat", "action-recipient"]) {
+  for (const id of ["select-target-seat", "select-private-seat", "action-recipient", "flow-recipient"]) {
     const select = document.getElementById(id);
     const selected = select.value;
     const options = [new Option("-- 选择座次 --", ""), ...Object.values(seats).map(seat => new Option(`${seat.seat_id}号位 (${seat.name} - ${seat.model || "待连接"})`, seat.seat_id))];
@@ -223,12 +229,15 @@ function updateSeatSelects(seats) {
     select.value = selected;
   }
   const groups = [...new Set(Object.values(seats).map(seat => seat.group_id).filter(Boolean))].sort();
-  for (const id of ["select-message-group", "action-team"]) {
+  for (const id of ["select-message-group", "action-team", "flow-team"]) {
     const groupSelect = document.getElementById(id);
     const selectedGroup = groupSelect.value;
     groupSelect.replaceChildren(new Option("-- 选择阵营 --", ""), ...groups.map(group => new Option(group, group)));
     groupSelect.value = selectedGroup;
   }
+  const targets = document.getElementById("flow-targets");
+  const selectedTargets = Array.from(targets.selectedOptions, option => option.value);
+  targets.replaceChildren(...Object.values(seats).map(seat => new Option(`${seat.seat_id}号位 · ${seat.name}`, seat.seat_id, false, selectedTargets.includes(String(seat.seat_id)))));
 }
 
 function renderSettings(settings) {
@@ -348,34 +357,33 @@ async function dispatchAction() {
   
   const prompt = document.getElementById("input-prompt").value.trim();
   const timeout = parseInt(document.getElementById("input-timeout").value) || 60;
-  const actionType = document.getElementById("action-type").value;
-  const scope = document.getElementById("action-scope").value;
-  const options = ["VOTE", "CHOOSE"].includes(actionType) ? document.getElementById("action-options").value.split("\n").map(value => value.trim()).filter(Boolean) : [];
-  if (["VOTE", "CHOOSE"].includes(actionType) && options.length < 2) return showNotice("投票或选择需要至少两个候选项", true);
-  const recipient = document.getElementById("action-recipient").value;
-  const group = document.getElementById("action-team").value;
-  if (scope === "PRIVATE" && !recipient) return showNotice("请选择结果接收席位", true);
-  if (scope === "GROUP" && !group) return showNotice("请选择结果接收阵营", true);
-  const minValue = actionType === "NUMBER" ? optionalNumber("action-min") : null;
-  const maxValue = actionType === "NUMBER" ? optionalNumber("action-max") : null;
-  if (minValue !== null && maxValue !== null && minValue > maxValue) return showNotice("最小值不能大于最大值", true);
+  const definition = readActionFields("action");
 
   await adminRequest("/api/admin/command", {
     command_type: "DISPATCH_ACTION",
     target_seat: parseInt(targetSeat),
     prompt,
     timeout,
-    action_type: actionType,
-    options,
-    result_scope: scope,
-    result_target_seat: scope === "PRIVATE" ? Number(recipient) : null,
-    result_group_id: scope === "GROUP" ? group : null,
-    min_value: minValue,
-    max_value: maxValue
+    ...definition
   });
 
   document.getElementById("input-prompt").value = "";
-  showNotice(`已向 ${targetSeat} 号席位派发${ACTION_NAMES[actionType]}`);
+  showNotice(`已向 ${targetSeat} 号席位派发${ACTION_NAMES[definition.action_type]}`);
+}
+
+function readActionFields(prefix) {
+  const actionType = document.getElementById(`${prefix}-type`).value;
+  const scope = document.getElementById(`${prefix}-scope`).value;
+  const options = ["VOTE", "CHOOSE"].includes(actionType) ? document.getElementById(`${prefix}-options`).value.split("\n").map(value => value.trim()).filter(Boolean) : [];
+  if (["VOTE", "CHOOSE"].includes(actionType) && !options.length) throw new Error("投票或选择需要填写候选项");
+  const recipient = document.getElementById(`${prefix}-recipient`).value;
+  const group = document.getElementById(`${prefix}-team`).value;
+  if (scope === "PRIVATE" && !recipient) throw new Error("请选择结果接收席位");
+  if (scope === "GROUP" && !group) throw new Error("请选择结果接收阵营");
+  const minValue = actionType === "NUMBER" ? optionalNumber(`${prefix}-min`) : null;
+  const maxValue = actionType === "NUMBER" ? optionalNumber(`${prefix}-max`) : null;
+  if (minValue !== null && maxValue !== null && minValue > maxValue) throw new Error("最小值不能大于最大值");
+  return { action_type: actionType, options, result_scope: scope, result_target_seat: scope === "PRIVATE" ? Number(recipient) : null, result_group_id: scope === "GROUP" ? group : null, min_value: minValue, max_value: maxValue };
 }
 
 function optionalNumber(id) {
@@ -386,18 +394,133 @@ function optionalNumber(id) {
   return number;
 }
 
-function updateActionFields() {
-  const type = document.getElementById("action-type").value;
-  const scope = document.getElementById("action-scope").value;
-  document.getElementById("action-options-group").hidden = !["VOTE", "CHOOSE"].includes(type);
-  document.getElementById("action-number-group").hidden = type !== "NUMBER";
-  document.getElementById("action-recipient-group").hidden = scope !== "PRIVATE";
-  document.getElementById("action-team-group").hidden = scope !== "GROUP";
+function updateActionFields(prefix = "action") {
+  const type = document.getElementById(`${prefix}-type`).value;
+  const scope = document.getElementById(`${prefix}-scope`).value;
+  document.getElementById(`${prefix}-options-group`).hidden = !["VOTE", "CHOOSE"].includes(type);
+  document.getElementById(`${prefix}-number-group`).hidden = type !== "NUMBER";
+  document.getElementById(`${prefix}-recipient-group`).hidden = scope !== "PRIVATE";
+  document.getElementById(`${prefix}-team-group`).hidden = scope !== "GROUP";
 }
 
 async function cancelAction(seatId) {
   await adminRequest("/api/admin/command", { command_type: "CANCEL_ACTION", target_seat: seatId });
   showNotice(`已取消 ${seatId} 号席位的待办行动`);
+}
+
+function renderFlow(flow) {
+  const status = flow.status || "IDLE";
+  const names = { IDLE: "未启动", RUNNING: "进行中", PAUSED: "已暂停", AWAITING_HOST: "等待主持人裁决", COMPLETED: "已完成" };
+  document.getElementById("flow-status").textContent = names[status] || status;
+  const pending = flow.pending_seats || [];
+  const step = flow.steps?.[flow.index];
+  document.getElementById("flow-progress").textContent = step ? `当前第 ${flow.index + 1}/${flow.steps.length} 步：${step.phase}。${pending.length ? `待提交：${pending.join("、")} 号席位` : names[status] || status}` : status === "COMPLETED" ? `全部 ${flow.steps?.length || 0} 步已完成。` : "添加步骤后可预览并启动流程。";
+  const active = ["RUNNING", "PAUSED", "AWAITING_HOST"].includes(status);
+  document.getElementById("flow-pause").disabled = !["RUNNING", "AWAITING_HOST"].includes(status);
+  document.getElementById("flow-resume").disabled = status !== "PAUSED";
+  document.getElementById("flow-advance").disabled = status !== "AWAITING_HOST";
+  document.getElementById("flow-stop").disabled = !active;
+  if (flowDraftRoom !== latestSnapshot?.room_id) {
+    flowDraftRoom = latestSnapshot?.room_id;
+    flowDraftDirty = false;
+    resetFlowEditor();
+  }
+  if (!flowDraftDirty) flowDraft = structuredClone(flow.steps || []);
+  renderFlowSteps();
+  document.getElementById("flow-start").disabled = active || !flowDraft.length;
+}
+
+function renderFlowSteps() {
+  const modeNames = { SEQUENTIAL: "依次行动", SIMULTANEOUS: "同时决策", MANUAL: "主持人裁决" };
+  const list = document.getElementById("flow-steps");
+  list.innerHTML = flowDraft.map((step, index) => `<li class="flow-step"><strong>${index + 1}. ${escapeHtml(step.phase)}</strong><div class="field-hint">第 ${step.round_num} 回合 · ${modeNames[step.mode] || escapeHtml(step.mode)}${step.mode === "MANUAL" ? "" : ` · ${escapeHtml(ACTION_NAMES[step.action_type] || step.action_type)}<br>席位 ${step.target_seats.join(" → ")} · ${step.timeout} 秒 · ${escapeHtml(SCOPE_NAMES[step.result_scope] || step.result_scope)}`}</div>${step.prompt ? `<div class="flow-prompt">${escapeHtml(step.prompt)}</div>` : ""}<div class="form-row"><button class="btn btn-secondary btn-sm" onclick="editFlowStep(${index})">编辑</button><button class="btn btn-secondary btn-sm" aria-label="步骤 ${index + 1} 上移" onclick="moveFlowStep(${index}, -1)" ${index === 0 ? "disabled" : ""}>上移</button><button class="btn btn-secondary btn-sm" aria-label="步骤 ${index + 1} 下移" onclick="moveFlowStep(${index}, 1)" ${index === flowDraft.length - 1 ? "disabled" : ""}>下移</button><button class="btn btn-danger btn-sm" onclick="removeFlowStep(${index})">删除</button></div></li>`).join("");
+  if (!flowDraft.length) list.innerHTML = '<li class="field-hint">尚未添加流程步骤。</li>';
+  document.getElementById("flow-start").disabled = !flowDraft.length || ["RUNNING", "PAUSED", "AWAITING_HOST"].includes(latestSnapshot?.flow?.status);
+}
+
+function updateFlowFields() {
+  document.getElementById("flow-action-fields").hidden = document.getElementById("flow-mode").value === "MANUAL";
+  updateActionFields("flow");
+}
+
+function resetFlowEditor() {
+  editingFlowStep = -1;
+  document.getElementById("flow-step-form").reset();
+  document.getElementById("flow-editor-heading").textContent = "新增步骤";
+  document.getElementById("flow-step-editor").open = false;
+  updateFlowFields();
+}
+
+function editFlowStep(index) {
+  const step = flowDraft[index];
+  if (!step) return;
+  editingFlowStep = index;
+  flowDraftDirty = true;
+  const values = { phase: step.phase, round: step.round_num, mode: step.mode, type: step.action_type, scope: step.result_scope, prompt: step.prompt, timeout: step.timeout, options: (step.options || []).join("\n"), recipient: step.result_target_seat ?? "", team: step.result_group_id || "", min: step.min_value ?? "", max: step.max_value ?? "" };
+  for (const [id, value] of Object.entries(values)) document.getElementById(`flow-${id}`).value = value;
+  for (const option of document.getElementById("flow-targets").options) option.selected = step.target_seats.includes(Number(option.value));
+  document.getElementById("flow-editor-heading").textContent = `编辑第 ${index + 1} 步`;
+  document.getElementById("flow-step-editor").open = true;
+  updateFlowFields();
+  document.getElementById("flow-phase").focus();
+}
+
+function saveFlowStep(event) {
+  event.preventDefault();
+  try {
+    const mode = document.getElementById("flow-mode").value;
+    const targets = mode === "MANUAL" ? [] : Array.from(document.getElementById("flow-targets").selectedOptions, option => Number(option.value));
+    if (mode !== "MANUAL" && !targets.length) throw new Error("请选择至少一个参与席位");
+    const step = {
+      phase: document.getElementById("flow-phase").value.trim(),
+      round_num: Number(document.getElementById("flow-round").value),
+      mode, target_seats: targets,
+      prompt: document.getElementById("flow-prompt").value.trim(),
+      timeout: Number(document.getElementById("flow-timeout").value),
+      ...(mode === "MANUAL" ? { action_type: "ACT", options: [], result_scope: "PUBLIC" } : readActionFields("flow"))
+    };
+    if (!step.phase) throw new Error("请填写阶段名称");
+    if (!Number.isInteger(step.round_num) || step.round_num < 1) throw new Error("回合必须是正整数");
+    if (!Number.isInteger(step.timeout) || step.timeout < 1) throw new Error("行动限时必须是正整数秒");
+    if (editingFlowStep < 0) flowDraft.push(step);
+    else flowDraft[editingFlowStep] = step;
+    flowDraftDirty = true;
+    resetFlowEditor();
+    renderFlowSteps();
+    showNotice("步骤已保存到流程预览");
+  } catch (error) {
+    showNotice(error.message, true);
+  }
+}
+
+function moveFlowStep(index, direction) {
+  const target = index + direction;
+  if (target < 0 || target >= flowDraft.length) return;
+  [flowDraft[index], flowDraft[target]] = [flowDraft[target], flowDraft[index]];
+  flowDraftDirty = true;
+  resetFlowEditor();
+  renderFlowSteps();
+}
+
+function removeFlowStep(index) {
+  flowDraft.splice(index, 1);
+  flowDraftDirty = true;
+  resetFlowEditor();
+  renderFlowSteps();
+}
+
+async function startFlow() {
+  if (!flowDraft.length) return showNotice("请先添加流程步骤", true);
+  await adminRequest("/api/admin/flow", { steps: flowDraft });
+  flowDraftDirty = false;
+  showNotice(`已启动 ${flowDraft.length} 步回合流程`);
+}
+
+async function operateFlow(operation) {
+  if (operation === "stop" && !confirm("停止流程并取消本流程未完成的行动？已产生的事件会保留。")) return;
+  await adminRequest(`/api/admin/flow/${operation}`, {});
+  const messages = { pause: "流程已暂停，已有行动的截止时间已冻结", resume: "流程已继续", advance: "已按主持人裁决推进流程", stop: "流程已停止" };
+  showNotice(messages[operation]);
 }
 
 function switchMsgTab(tab) {

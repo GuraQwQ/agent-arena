@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from engine import ArenaEngine
-from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, HostCommand, Scenario, SeatDefinition, VisibilityScope
+from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, FlowPlan, HostCommand, Scenario, SeatDefinition, VisibilityScope
 from cli_mount import mount_cli, unmount_cli
 
 
@@ -42,8 +42,25 @@ async def lifespan(app: FastAPI):
     if cli_path:
         print(f"🚀 已自动挂载全局 arena CLI 入口: {cli_path}")
     print(f"🔐 主持人管理令牌: {ADMIN_TOKEN}")
-    yield
-    unmount_cli()
+    maintenance = asyncio.create_task(maintain_actions())
+    try:
+        yield
+    finally:
+        maintenance.cancel()
+        try:
+            await maintenance
+        except asyncio.CancelledError:
+            pass
+        unmount_cli()
+
+
+async def maintain_actions():
+    while True:
+        await asyncio.sleep(0.5)
+        try:
+            engine.tick()
+        except OSError as exc:
+            print(f"超时处理未保存，将重试: {exc}", file=sys.stderr)
 
 
 app = FastAPI(title="Agent Arena", description="通用多智能体独立操作与沙盒博弈基座", lifespan=lifespan)
@@ -431,6 +448,20 @@ async def admin_command(cmd: HostCommand, request: Request):
         return {"success": True, "message": "房间已重置并清除快照"}
 
     raise HTTPException(status_code=400, detail=f"未知的命令类型: {cmd.command_type}")
+
+
+@app.post("/api/admin/flow")
+async def start_flow(plan: FlowPlan, request: Request):
+    require_admin(request)
+    engine.start_flow(plan.steps)
+    return {"success": True, "flow": engine.flow.model_dump()}
+
+
+@app.post("/api/admin/flow/{operation}")
+async def control_flow(operation: str, request: Request):
+    require_admin(request)
+    engine.control_flow(operation)
+    return {"success": True, "flow": engine.flow.model_dump()}
 
 
 @app.post("/api/admin/session")
