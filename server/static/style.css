@@ -428,6 +428,11 @@ button:disabled, fieldset:disabled { opacity: 0.6; cursor: wait; }
 .flow-start-hint { margin-top: 14px; }
 #flow-step-form { margin-top: 12px; }
 #flow-targets { min-height: 100px; }
+.timeline-tabs { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.replay-controls { padding: 12px 16px 0; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.archive-actions { flex-wrap: wrap; margin-bottom: 10px; }
+.replay-position-label { margin-top: 10px; }
+input[type="range"] { padding: 0; accent-color: var(--primary); cursor: pointer; }
 .seat-title, .seat-meta, .event-title { overflow-wrap: anywhere; }
 .seat-top { gap: 8px; align-items: flex-start; }
 .badge { flex-shrink: 0; }

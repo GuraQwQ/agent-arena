@@ -12,6 +12,11 @@ let flowDraft = [];
 let flowDraftRoom = null;
 let flowDraftDirty = false;
 let editingFlowStep = -1;
+let replayHost = null;
+let replayData = null;
+let replayPosition = 0;
+let replayTimer = null;
+let replayLoadSerial = 0;
 const ADMIN_TOKEN_KEY = "arena_admin_token";
 const ACTION_NAMES = { ACT: "通用行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "选择", NUMBER: "数值" };
 const SCOPE_NAMES = { PUBLIC: "全员公开", PRIVATE: "指定席位", GROUP: "指定阵营", HOST_ONLY: "仅主持人" };
@@ -150,7 +155,7 @@ function renderSnapshot(data) {
   const container = document.getElementById("timeline-container");
   container.innerHTML = "";
   if (data.events && data.events.length > 0) {
-    data.events.forEach(appendEvent);
+    data.events.forEach(event => appendEvent(event));
   } else {
     container.innerHTML = '<div class="empty-state">暂无事件记录，请推进阶段或发出指示。</div>';
   }
@@ -276,8 +281,8 @@ async function saveSettings() {
 }
 
 // 渲染单个事件追加
-function appendEvent(ev) {
-  const container = document.getElementById("timeline-container");
+function appendEvent(ev, targetId = "timeline-container") {
+  const container = document.getElementById(targetId);
   
   // 移除空提示
   const empty = container.querySelector(".empty-state");
@@ -332,9 +337,169 @@ function appendEvent(ev) {
 
   container.appendChild(itemEl);
 
-  if (document.getElementById("chk-auto-scroll").checked) {
+  if (targetId === "replay-timeline" || document.getElementById("chk-auto-scroll").checked) {
     container.scrollTop = container.scrollHeight;
   }
+}
+
+async function switchTimelineView(view) {
+  const replay = view === "replay";
+  for (const name of ["live", "replay"]) {
+    document.getElementById(`view-${name}`).classList.toggle("active", name === view);
+    document.getElementById(`view-${name}`).setAttribute("aria-pressed", String(name === view));
+  }
+  document.getElementById("timeline-heading").textContent = replay ? "存档复盘" : "实时事件";
+  document.getElementById("timeline-filters").hidden = replay;
+  document.getElementById("timeline-container").hidden = replay;
+  document.getElementById("replay-controls").hidden = !replay;
+  document.getElementById("replay-timeline").hidden = !replay;
+  if (replay) await refreshArchives();
+  else pauseReplay();
+}
+
+async function refreshArchives() {
+  const data = await adminRequest("/api/admin/archives", undefined, "GET");
+  const select = document.getElementById("replay-archive");
+  const selected = select.value;
+  const archives = data.archives || [];
+  const options = archives.map(archive => {
+    const date = archive.archived_at ? new Date(archive.archived_at * 1000).toLocaleString() : "";
+    const option = new Option(archive.error ? `${archive.title} · 读取失败` : `${archive.title} · ${archive.event_count} 条事件 · ${date}`, archive.room_id);
+    option.disabled = Boolean(archive.error);
+    return option;
+  });
+  select.replaceChildren(new Option(archives.length ? "-- 选择对局存档 --" : "-- 暂无存档，请先保存对局 --", ""), ...options);
+  if (archives.some(archive => archive.room_id === selected && !archive.error)) select.value = selected;
+  const errors = archives.filter(archive => archive.error);
+  if (errors.length) showNotice(errors.map(archive => `${archive.title}：${archive.error}`).join("；"), true);
+}
+
+async function saveArchive() {
+  const saved = await adminRequest("/api/admin/archives", {});
+  await refreshArchives();
+  document.getElementById("replay-archive").value = saved.room_id;
+  await loadReplayArchive();
+  showNotice("当前对局已保存，可在复盘中查看");
+}
+
+function clearReplay(message) {
+  pauseReplay();
+  replayData = null;
+  replayPosition = 0;
+  for (const id of ["replay-perspective", "replay-round", "replay-position", "replay-play", "replay-download"]) document.getElementById(id).disabled = true;
+  const container = document.getElementById("replay-timeline");
+  container.replaceChildren();
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  empty.textContent = message;
+  container.appendChild(empty);
+  document.getElementById("replay-position-label").textContent = message;
+}
+
+async function loadReplayArchive() {
+  const roomId = document.getElementById("replay-archive").value;
+  const serial = ++replayLoadSerial;
+  replayHost = null;
+  clearReplay(roomId ? "正在加载对局存档…" : "选择存档开始复盘。");
+  if (!roomId) return;
+  try {
+    const host = await adminRequest(`/api/admin/archives/${encodeURIComponent(roomId)}`, undefined, "GET");
+    if (serial !== replayLoadSerial) return;
+    replayHost = host;
+    const perspectives = document.getElementById("replay-perspective");
+    perspectives.replaceChildren(new Option("主持人", ""), ...Object.values(host.seats || {}).map(seat => new Option(`${seat.seat_id} 号位 · ${seat.name}`, seat.seat_id)));
+    perspectives.disabled = false;
+    await loadReplayPerspective();
+  } catch (error) {
+    if (serial !== replayLoadSerial) return;
+    clearReplay("存档加载失败，请刷新后重试。");
+    showNotice(error.message, true);
+  }
+}
+
+async function loadReplayPerspective() {
+  if (!replayHost) return;
+  const roomId = document.getElementById("replay-archive").value;
+  const seatId = document.getElementById("replay-perspective").value;
+  const serial = ++replayLoadSerial;
+  clearReplay("正在加载所选视角…");
+  document.getElementById("replay-perspective").disabled = false;
+  try {
+    const data = seatId ? await adminRequest(`/api/admin/archives/${encodeURIComponent(roomId)}?seat_id=${encodeURIComponent(seatId)}`, undefined, "GET") : replayHost;
+    if (serial !== replayLoadSerial) return;
+    replayData = data;
+    const events = data.events || [];
+    const rounds = [...new Set(events.map(event => event.round_num))].sort((a, b) => a - b);
+    const roundSelect = document.getElementById("replay-round");
+    roundSelect.replaceChildren(...rounds.map(round => new Option(`第 ${round} 回合`, round)));
+    roundSelect.disabled = !events.length;
+    const slider = document.getElementById("replay-position");
+    slider.max = events.length;
+    slider.disabled = !events.length;
+    document.getElementById("replay-play").disabled = !events.length;
+    document.getElementById("replay-download").disabled = false;
+    seekReplay(events.length ? 1 : 0);
+  } catch (error) {
+    if (serial !== replayLoadSerial) return;
+    clearReplay("该视角加载失败，请重新选择视角。");
+    document.getElementById("replay-perspective").disabled = false;
+    showNotice(error.message, true);
+  }
+}
+
+function seekReplay(position) {
+  const events = replayData?.events || [];
+  replayPosition = Math.max(0, Math.min(events.length, Number(position) || 0));
+  document.getElementById("replay-position").value = replayPosition;
+  const container = document.getElementById("replay-timeline");
+  container.replaceChildren();
+  events.slice(0, replayPosition).forEach(event => appendEvent(event, "replay-timeline"));
+  const current = events[replayPosition - 1];
+  if (current) {
+    document.getElementById("replay-round").value = current.round_num;
+    document.getElementById("replay-position-label").textContent = `事件 ${replayPosition}/${events.length} · 第 ${current.round_num} 回合 · ${new Date(current.timestamp * 1000).toLocaleString()}`;
+  } else {
+    container.innerHTML = '<div class="empty-state">此视角在当前位置没有可见事件。</div>';
+    document.getElementById("replay-position-label").textContent = events.length ? `事件 0/${events.length} · 对局开始` : "此视角没有可见事件。";
+  }
+  if (replayPosition >= events.length) pauseReplay();
+}
+
+function jumpReplayRound() {
+  pauseReplay();
+  const round = Number(document.getElementById("replay-round").value);
+  const index = (replayData?.events || []).findIndex(event => event.round_num === round);
+  if (index >= 0) seekReplay(index + 1);
+}
+
+function pauseReplay() {
+  if (replayTimer) clearInterval(replayTimer);
+  replayTimer = null;
+  document.getElementById("replay-play").textContent = "自动播放";
+}
+
+function toggleReplayPlayback() {
+  if (replayTimer) return pauseReplay();
+  const events = replayData?.events || [];
+  if (!events.length) return;
+  if (replayPosition >= events.length) seekReplay(0);
+  document.getElementById("replay-play").textContent = "暂停播放";
+  replayTimer = setInterval(() => seekReplay(replayPosition + 1), 1000);
+}
+
+function downloadReplay() {
+  if (!replayData) return;
+  const seatId = document.getElementById("replay-perspective").value;
+  downloadJSON(replayData, `arena-${replayData.room_id || "archive"}-${seatId ? `seat-${seatId}` : "host"}.json`);
+}
+
+function downloadJSON(data, filename) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // API 指令交互
@@ -631,12 +796,7 @@ async function applyScenario(event) {
 
 async function exportScenario() {
   const scenario = await adminRequest("/api/admin/scenario", undefined, "GET");
-  const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "arena-scenario.json";
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadJSON(scenario, "arena-scenario.json");
   showNotice("剧本模板已导出");
 }
 

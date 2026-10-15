@@ -52,14 +52,27 @@
     <!-- 中栏: 全知事件时间轴 -->
     <section class="panel timeline-panel">
       <div class="panel-header">
-        <h2>全知事件流 (God View)</h2>
-        <div class="filter-controls">
+        <h2 id="timeline-heading">实时事件</h2>
+        <div class="filter-controls" id="timeline-filters">
           <label><input type="checkbox" id="chk-auto-scroll" checked> 自动滚动</label>
         </div>
+      </div>
+      <div class="timeline-tabs" role="group" aria-label="事件查看模式"><button class="tab-btn active" id="view-live" aria-pressed="true" onclick="switchTimelineView('live')">实时</button><button class="tab-btn" id="view-replay" aria-pressed="false" onclick="switchTimelineView('replay')">存档复盘</button></div>
+      <div id="replay-controls" class="replay-controls" hidden>
+        <div class="form-row archive-actions"><button class="btn btn-secondary btn-sm" onclick="refreshArchives()">刷新存档</button><button class="btn btn-secondary btn-sm" onclick="saveArchive()">保存当前局</button></div>
+        <div class="form-group"><label for="replay-archive">选择对局存档</label><select id="replay-archive" onchange="loadReplayArchive()"><option value="">-- 暂无存档，请先保存对局 --</option></select></div>
+        <div class="form-row">
+          <div class="form-group flex-1"><label for="replay-perspective">查看视角</label><select id="replay-perspective" onchange="loadReplayPerspective()" disabled><option value="">主持人</option></select></div>
+          <div class="form-group flex-1"><label for="replay-round">跳转回合</label><select id="replay-round" onchange="jumpReplayRound()" disabled><option value="">-- 选择回合 --</option></select></div>
+        </div>
+        <div class="form-group"><label for="replay-position">事件时间线</label><input id="replay-position" type="range" min="0" max="0" value="0" oninput="seekReplay(this.value)" disabled></div>
+        <div class="form-row"><button class="btn btn-primary btn-sm" id="replay-play" onclick="toggleReplayPlayback()" disabled>自动播放</button><button class="btn btn-secondary btn-sm" id="replay-download" onclick="downloadReplay()" disabled>下载当前视角 JSON</button></div>
+        <p class="field-hint replay-position-label" id="replay-position-label" aria-live="polite">选择存档开始复盘。</p>
       </div>
       <div class="timeline-container" id="timeline-container">
         <!-- 动态事件渲染 -->
       </div>
+      <div class="timeline-container" id="replay-timeline" hidden><div class="empty-state">保存对局后，可按视角和回合查看历史。</div></div>
     </section>
 
     <!-- 右栏: 主持人操作中枢 -->

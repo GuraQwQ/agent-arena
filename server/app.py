@@ -20,7 +20,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from engine import ArenaEngine
+from engine import ArenaEngine, SNAPSHOT_FILE
+from archives import ArchiveStore
 from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, FlowPlan, HostCommand, Scenario, SeatDefinition, VisibilityScope
 from cli_mount import mount_cli, unmount_cli
 
@@ -87,6 +88,7 @@ app.add_middleware(
 
 # 全局引擎单例 (自动加载历史快照)
 engine = ArenaEngine()
+archives = ArchiveStore(SNAPSHOT_FILE.parent / "archives")
 
 STATIC_DIR = Path(__file__).parent / "static"
 CLIENT_FILE = Path(__file__).parent.parent / "client" / "agent.py"
@@ -462,6 +464,28 @@ async def control_flow(operation: str, request: Request):
     require_admin(request)
     engine.control_flow(operation)
     return {"success": True, "flow": engine.flow.model_dump()}
+
+
+@app.get("/api/admin/archives")
+async def list_archives(request: Request):
+    require_admin(request)
+    return {"archives": archives.list()}
+
+
+@app.post("/api/admin/archives")
+async def archive_current(request: Request):
+    require_admin(request)
+    room_id = archives.save(engine.snapshot().model_dump(mode="json"))
+    return {"success": True, "room_id": room_id}
+
+
+@app.get("/api/admin/archives/{room_id}")
+async def read_archive(room_id: str, request: Request, seat_id: Optional[int] = Query(None, ge=1)):
+    require_admin(request)
+    try:
+        return archives.export(room_id, seat_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="存档不存在")
 
 
 @app.post("/api/admin/session")
