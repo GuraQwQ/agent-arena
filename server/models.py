@@ -4,6 +4,7 @@
 """
 
 from enum import Enum
+from uuid import uuid4
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -62,6 +63,7 @@ class ActionSubmission(BaseModel):
     """Agent 提交的行动结果"""
     seat_id: int
     token: str
+    request_id: str = Field(..., min_length=1, max_length=128)
     action_type: str
     content: str
     secret_reason: Optional[str] = None
@@ -97,6 +99,8 @@ class ArenaSettingsUpdate(BaseModel):
 
 class RoomSnapshot(BaseModel):
     """落盘持久化快照模型"""
+    schema_version: int = 2
+    room_id: str = Field(default_factory=lambda: uuid4().hex)
     room_title: str
     phase: str
     round_num: int
@@ -106,4 +110,11 @@ class RoomSnapshot(BaseModel):
     active_actions: Dict[int, ActionRequest] = Field(default_factory=dict)
     last_seen_seqs: Dict[int, int] = Field(default_factory=dict)
     settings: ArenaSettings = Field(default_factory=ArenaSettings)
+    receipts: Dict[str, dict] = Field(default_factory=dict)
+
+
+class EventAcknowledgement(BaseModel):
+    seat_id: int
+    room_id: str
+    seq: int = Field(..., ge=0)
 

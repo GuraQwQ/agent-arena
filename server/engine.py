@@ -4,27 +4,64 @@
 """
 
 import asyncio
-import errno
-import os
+import json
 import threading
 import time
 import uuid
+from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from models import ActionRequest, ArenaSettings, Event, RoomSnapshot, Seat, VisibilityScope
+from storage import write_json
 
 SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data"
 SNAPSHOT_FILE = SNAPSHOT_DIR / "room_state.json"
 
 
+def mutating(method):
+    """状态与快照一起提交，写入失败时还原内存，再发送通知。"""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._state_lock:
+            if self._changing:
+                return method(self, *args, **kwargs)
+            before = self.snapshot().model_copy(deep=True)
+            generation = self._reset_generation
+            self._changing = True
+            try:
+                result = method(self, *args, **kwargs)
+                self._changing = False
+                self.save_snapshot()
+            except BaseException:
+                self._changing = False
+                self._apply_snapshot(before)
+                self._reset_generation = generation
+                raise
+            if generation != self._reset_generation:
+                for waiter in list(self._wait_events.values()):
+                    waiter.set()
+            for event in self.events:
+                if self.room_id == before.room_id and event.seq <= before.seq_counter:
+                    continue
+                self._notify_relevant_waiters(event)
+                self._notify_sse(event)
+            self.broadcast_host_update()
+            return result
+    return wrapped
+
+
 class ArenaEngine:
     def __init__(self, room_title: str = "通用多智能体竞技场", restore_from_disk: bool = True):
         self.room_title = room_title
+        self.room_id = uuid.uuid4().hex
         self.phase = "准备中"
         self.round_num = 1
         self.settings = ArenaSettings()
         self._snapshot_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._changing = False
+        self.receipts = {}
         self._reset_generation = 0
         
         # 座次映射: seat_id -> Seat
@@ -70,66 +107,57 @@ class ArenaEngine:
             )
             self.last_seen_seqs[i] = 0
 
+    def snapshot(self) -> RoomSnapshot:
+        return RoomSnapshot(
+            room_id=self.room_id, room_title=self.room_title, phase=self.phase,
+            round_num=self.round_num, seq_counter=self._seq_counter, seats=self.seats,
+            events=self.events, active_actions=self.active_actions,
+            last_seen_seqs=self.last_seen_seqs, settings=self.settings, receipts=self.receipts
+        )
+
+    def _apply_snapshot(self, snapshot: RoomSnapshot):
+        self.room_id = snapshot.room_id
+        self.room_title = snapshot.room_title
+        self.phase = snapshot.phase
+        self.round_num = snapshot.round_num
+        self._seq_counter = snapshot.seq_counter
+        self.seats = snapshot.seats
+        self.events = snapshot.events
+        self.active_actions = snapshot.active_actions
+        self.last_seen_seqs = snapshot.last_seen_seqs
+        self.settings = snapshot.settings
+        self.receipts = snapshot.receipts
+
     def save_snapshot(self):
         """原子落盘保存当前对局全量快照"""
+        if self._changing:
+            return
         with self._snapshot_lock:
-            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-            snapshot = RoomSnapshot(
-                room_title=self.room_title,
-                phase=self.phase,
-                round_num=self.round_num,
-                seq_counter=self._seq_counter,
-                seats=self.seats,
-                events=self.events,
-                active_actions=self.active_actions,
-                last_seen_seqs=self.last_seen_seqs,
-                settings=self.settings
-            )
-            tmp_file = SNAPSHOT_FILE.with_name(f".{SNAPSHOT_FILE.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                with tmp_file.open("w", encoding="utf-8") as handle:
-                    handle.write(snapshot.model_dump_json(indent=2))
-                    handle.flush()
-                    try:
-                        os.fsync(handle.fileno())
-                    except OSError as exc:
-                        if exc.errno != errno.EBADF:
-                            raise
-                tmp_file.replace(SNAPSHOT_FILE)
-            finally:
-                try:
-                    tmp_file.unlink()
-                except FileNotFoundError:
-                    pass
+            write_json(SNAPSHOT_FILE, self.snapshot().model_dump(mode="json"))
 
     def load_snapshot(self) -> bool:
         """从磁盘加载恢复快照"""
         if not SNAPSHOT_FILE.exists():
             return False
-        try:
-            content = SNAPSHOT_FILE.read_text(encoding="utf-8")
-            snapshot = RoomSnapshot.model_validate_json(content)
-            self.room_title = snapshot.room_title
-            self.phase = snapshot.phase
-            self.round_num = snapshot.round_num
-            self._seq_counter = snapshot.seq_counter
-            self.seats = snapshot.seats
-            self.events = snapshot.events
-            self.active_actions = snapshot.active_actions
-            self.last_seen_seqs = snapshot.last_seen_seqs or {sid: 0 for sid in self.seats}
-            self.settings = snapshot.settings
-            migrated = False
-            for sid, seat in self.seats.items():
-                if not seat.claim_token:
-                    seat.claim_token = uuid.uuid4().hex
-                    migrated = True
-                self.last_seen_seqs.setdefault(sid, 0)
-            if migrated:
-                self.save_snapshot()
-            return True
-        except Exception as e:
-            print(f"⚠️ 读取历史快照失败，将初始化新对局: {e}")
-            return False
+        raw = json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))
+        if raw.get("schema_version", 1) > 2:
+            raise ValueError("快照版本高于当前服务版本，请使用对应版本启动")
+        snapshot = RoomSnapshot.model_validate(raw)
+        if raw.get("schema_version", 1) < 2:
+            backup = SNAPSHOT_FILE.with_suffix(".v1.bak")
+            if not backup.exists():
+                write_json(backup, raw)
+            snapshot.last_seen_seqs = {sid: 0 for sid in snapshot.seats}
+            snapshot.schema_version = 2
+        self._apply_snapshot(snapshot)
+        for sid, seat in self.seats.items():
+            if not seat.claim_token:
+                seat.claim_token = uuid.uuid4().hex
+            self.last_seen_seqs.setdefault(sid, 0)
+            if seat.status == "WAITING":
+                seat.status = "IDLE"
+        self.save_snapshot()
+        return True
 
     def clear_snapshot(self):
         """清空磁盘快照"""
@@ -143,6 +171,7 @@ class ArenaEngine:
         self._seq_counter += 1
         return self._seq_counter
 
+    @mutating
     def join_seat(
         self,
         seat_id: int,
@@ -200,6 +229,7 @@ class ArenaEngine:
         seat = self.seats.get(seat_id)
         return bool(seat and claim_token and seat.claim_token == claim_token)
 
+    @mutating
     def record_event(
         self,
         event_type: str,
@@ -237,6 +267,8 @@ class ArenaEngine:
 
     def _notify_relevant_waiters(self, event: Event):
         """精准唤醒相关 Agent 的长轮询"""
+        if self._changing:
+            return
         for seat_id, waiter in self._wait_events.items():
             if waiter.is_set():
                 continue
@@ -294,6 +326,7 @@ class ArenaEngine:
                 result.append(item)
         return result
 
+    @mutating
     def dispatch_action(self, target_seat: int, action_type: str, prompt: str, options: Optional[List[str]] = None, timeout: int = 60) -> ActionRequest:
         """主持人向指定 Agent 下达行动命令 (点名)"""
         if target_seat not in self.seats:
@@ -328,19 +361,30 @@ class ArenaEngine:
         )
 
         # 唤醒该 Agent 的长轮询 (触发退出码 42)
-        if target_seat in self._wait_events:
+        if not self._changing and target_seat in self._wait_events:
             self._wait_events[target_seat].set()
 
         self.broadcast_host_update()
         return req
 
-    def submit_action(self, seat_id: int, token: str, action_type: str, content: str, secret_reason: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> Event:
+    @mutating
+    def submit_action(self, seat_id: int, token: str, action_type: str, content: str, request_id: str, secret_reason: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> Event:
         """处理 Agent 提交的行动结果"""
         if not self.verify_token(seat_id, token):
             raise PermissionError("无效的座次令牌")
 
+        receipt_key = f"{seat_id}:{request_id}"
+        payload = {"action_type": action_type, "content": content, "secret_reason": secret_reason, "data": data}
+        if receipt_key in self.receipts:
+            receipt = self.receipts[receipt_key]
+            if receipt["payload"] != payload:
+                raise ValueError("同一行动编号不能重复提交不同内容")
+            return next(event for event in self.events if event.seq == receipt["event_seq"])
+
         pending = self.active_actions.get(seat_id)
         if pending:
+            if pending.request_id != request_id or pending.phase != self.phase:
+                raise ValueError("行动编号或阶段已变更，请重新获取主持人指令")
             if pending.action_type != action_type:
                 raise ValueError("提交的动作类型与主持人指令不匹配")
             if pending.deadline <= time.time():
@@ -364,8 +408,17 @@ class ArenaEngine:
             secret_reason=secret_reason,
             data=data or {"action_type": action_type}
         )
+        self.receipts[receipt_key] = {"event_seq": event.seq, "payload": payload}
         self.broadcast_host_update()
         return event
+
+    @mutating
+    def acknowledge(self, seat_id: int, token: str, room_id: str, seq: int):
+        if not self.verify_token(seat_id, token):
+            raise PermissionError("无效的座次令牌")
+        if room_id != self.room_id or not 0 <= seq <= self._seq_counter:
+            raise ValueError("确认游标不属于当前对局")
+        self.last_seen_seqs[seat_id] = max(self.last_seen_seqs.get(seat_id, 0), seq)
 
     async def wait_turn(self, seat_id: int, token: str, timeout: int = 50) -> Dict[str, Any]:
         """长轮询挂起等待核心逻辑"""
@@ -386,9 +439,8 @@ class ArenaEngine:
             seat.status = "THINKING"
             last_seq = self.last_seen_seqs.get(seat_id, 0)
             new_events = self.filter_events_for_seat(seat_id, since_seq=last_seq)
-            if new_events:
-                self.last_seen_seqs[seat_id] = new_events[-1]["seq"]
             return {
+                "room_id": self.room_id,
                 "code": 42,
                 "status": "ACTION_REQUIRED",
                 "action": action.model_dump(),
@@ -399,8 +451,8 @@ class ArenaEngine:
         last_seq = self.last_seen_seqs.get(seat_id, 0)
         unseen_events = self.filter_events_for_seat(seat_id, since_seq=last_seq)
         if unseen_events:
-            self.last_seen_seqs[seat_id] = unseen_events[-1]["seq"]
             return {
+                "room_id": self.room_id,
                 "code": 43,
                 "status": "OBSERVE_UPDATE",
                 "events": unseen_events,
@@ -437,9 +489,8 @@ class ArenaEngine:
         if action:
             seat.status = "THINKING"
             recent = self.filter_events_for_seat(seat_id, since_seq=self.last_seen_seqs.get(seat_id, 0))
-            if recent:
-                self.last_seen_seqs[seat_id] = recent[-1]["seq"]
             return {
+                "room_id": self.room_id,
                 "code": 42,
                 "status": "ACTION_REQUIRED",
                 "action": action.model_dump(),
@@ -449,8 +500,8 @@ class ArenaEngine:
         # 5. 唤醒后检查是否是观察更新
         fresh_events = self.filter_events_for_seat(seat_id, since_seq=self.last_seen_seqs.get(seat_id, 0))
         if fresh_events:
-            self.last_seen_seqs[seat_id] = fresh_events[-1]["seq"]
             return {
+                "room_id": self.room_id,
                 "code": 43,
                 "status": "OBSERVE_UPDATE",
                 "events": fresh_events,
@@ -467,22 +518,26 @@ class ArenaEngine:
 
     def _notify_sse(self, event: Event):
         """向所有连接的 Web 控制台推送增量事件"""
+        if self._changing:
+            return
         data = event.model_dump()
         for q in self.sse_queues:
             q.put_nowait({"type": "EVENT", "data": data})
 
     def broadcast_host_update(self):
         """推送全量座次状态快照更新"""
+        if self._changing:
+            return
         snapshot = self.get_host_snapshot()
         for q in self.sse_queues:
             q.put_nowait({"type": "SNAPSHOT", "data": snapshot})
 
+    @mutating
     def reset(self):
         """在保留现有 SSE 连接的情况下重置房间"""
-        self.clear_snapshot()
-        for waiter in self._wait_events.values():
-            waiter.set()
         self._reset_generation += 1
+        self.room_id = uuid.uuid4().hex
+        self.receipts = {}
         self.phase = "准备中"
         self.round_num = 1
         self.settings = ArenaSettings()
@@ -498,6 +553,7 @@ class ArenaEngine:
         """获取主持人上帝视角全量快照"""
         now = time.time()
         return {
+            "room_id": self.room_id,
             "room_title": self.room_title,
             "phase": self.phase,
             "round_num": self.round_num,

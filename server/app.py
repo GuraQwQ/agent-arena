@@ -16,12 +16,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from engine import ArenaEngine
-from models import ActionSubmission, ArenaSettingsUpdate, HostCommand, VisibilityScope
+from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, HostCommand, VisibilityScope
 from cli_mount import mount_cli, unmount_cli
 
 
@@ -47,6 +47,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agent Arena", description="通用多智能体独立操作与沙盒博弈基座", lifespan=lifespan)
+
+
+@app.exception_handler(OSError)
+async def storage_error(request: Request, exc: OSError):
+    print(f"快照写入失败: {exc}", file=sys.stderr)
+    return JSONResponse(status_code=503, content={"detail": "状态保存失败，请检查存储后重试；本次操作尚未提交"})
 
 # 启用 CORS
 app.add_middleware(
@@ -236,6 +242,17 @@ async def player_log(
     return {"events": events}
 
 
+@app.post("/api/player/ack")
+async def player_ack(ack: EventAcknowledgement, x_player_token: str = Header(...)):
+    try:
+        engine.acknowledge(ack.seat_id, x_player_token, ack.room_id, ack.seq)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"success": True}
+
+
 @app.get("/api/player/status")
 async def player_status(
     seat_id: int = Query(...),
@@ -264,6 +281,7 @@ async def player_submit_act(sub: ActionSubmission):
             token=sub.token,
             action_type=sub.action_type,
             content=sub.content,
+            request_id=sub.request_id,
             secret_reason=sub.secret_reason,
             data=sub.data
         )

@@ -14,6 +14,8 @@
 import argparse
 import json
 import os
+import tempfile
+import uuid
 import sys
 import time
 import urllib.error
@@ -50,7 +52,15 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict):
-    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    descriptor, name = tempfile.mkstemp(prefix=".agent-", suffix=".tmp", dir=CONFIG_FILE.resolve().parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(cfg, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        Path(name).replace(CONFIG_FILE)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def api_request(cfg: dict, method: str, path: str, body: dict = None, params: dict = None, timeout: int = 65) -> dict:
@@ -114,19 +124,22 @@ def cmd_join(args):
     sys.exit(EXIT_OK)
 
 
-def cmd_wait(args):
+def receive_update(timeout: int):
     cfg = load_config()
     seat_id = cfg.get("seat")
     if not seat_id or not cfg.get("token"):
         print("❌ 未入座或缺少令牌，请先执行主持人提供的自举命令")
         sys.exit(EXIT_ERROR)
 
-    timeout = args.timeout or 50
     res = api_request(cfg, "GET", "/api/player/wait", params={"seat_id": seat_id, "timeout": timeout})
     code = res.get("code", 0)
+    events = res.get("events", res.get("recent_events", []))
+    for event in events:
+        print(f"#{event['seq']} {event['title']}: {event['content']}")
 
     if code == EXIT_ACT:
         action = res["action"]
+        cfg["pending_action"] = action
         print("=" * 60)
         print("🔔 【轮到你正式行动】")
         print(f"阶段: {action.get('phase', '当前')} | 动作类型: {action.get('action_type', 'ACT')}")
@@ -141,23 +154,26 @@ def cmd_wait(args):
         print("  2. 执行提交: python agent.py act --reason \"仅主持人可见的深层动机\"")
         print("  3. 提交完成后立即重启后台监听: python agent.py wait")
         print("=" * 60)
-        sys.exit(EXIT_ACT)
 
     elif code == EXIT_OBSERVE:
-        events = res.get("events", [])
         print("=" * 60)
         print("💭 【收到新事件更新 (仅观察)】")
-        for ev in events:
-            time_str = time.strftime("%H:%M:%S", time.localtime(ev["timestamp"]))
-            print(f"  [{time_str}] {ev['title']}: {ev['content']}")
         print("-" * 60)
         print("💡 指引: 请花 1 分钟简短更新本地 memory.md 的推理笔记，不要行动，立即重启 wait。")
         print("=" * 60)
-        sys.exit(EXIT_OBSERVE)
+    sys.stdout.flush()
+    if res.get("room_id"):
+        cfg["room_id"] = res["room_id"]
+    save_config(cfg)
+    if events:
+        api_request(cfg, "POST", "/api/player/ack", body={
+            "seat_id": seat_id, "room_id": res["room_id"], "seq": events[-1]["seq"]
+        })
+    return code
 
-    else:
-        # 静默超时
-        sys.exit(EXIT_OK)
+
+def cmd_wait(args):
+    sys.exit(receive_update(args.timeout or 50))
 
 
 def cmd_act(args):
@@ -182,18 +198,29 @@ def cmd_act(args):
     payload = {
         "seat_id": seat_id,
         "token": cfg["token"],
-        "action_type": args.type or "ACT",
+        "action_type": args.type or cfg.get("pending_action", {}).get("action_type", "ACT"),
         "content": content,
         "secret_reason": args.reason or None
     }
 
+    pending_submission = cfg.get("pending_submission", {})
+    previous_payload = {key: value for key, value in pending_submission.items() if key != "request_id"}
+    payload["request_id"] = args.request_id or cfg.get("pending_action", {}).get("request_id") or (
+        pending_submission.get("request_id") if previous_payload == payload else uuid.uuid4().hex
+    )
+    cfg["pending_submission"] = payload
+    save_config(cfg)
+
     res = api_request(cfg, "POST", "/api/player/act", body=payload)
+    cfg.pop("pending_action", None)
+    cfg.pop("pending_submission", None)
+    save_config(cfg)
     print(f"✅ 行动已成功提交！(事件序列号: #{res.get('event_seq')})")
 
     # 归档 action.txt
     if action_file.exists() and action_file.name == "action.txt":
         try:
-            action_file.rename("action.sent.txt")
+            action_file.replace(action_file.with_name("action.sent.txt"))
         except Exception:
             pass
 
@@ -252,7 +279,8 @@ def main():
 
     # act
     p_act = subparsers.add_parser("act", help="提交正式行动")
-    p_act.add_argument("--type", type=str, default="ACT", help="动作类型")
+    p_act.add_argument("--type", type=str, help="动作类型，默认使用主持人指令")
+    p_act.add_argument("--request-id", type=str, help="行动编号，默认使用最近收到的指令")
     p_act.add_argument("--file", type=str, help="从文件读取行动内容 (默认 action.txt)")
     p_act.add_argument("--reason", type=str, help="仅主持人可见的战术动机/思考链")
     p_act.add_argument("content", nargs="*", help="命令行直接传入的内容")
