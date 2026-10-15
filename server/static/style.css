@@ -415,6 +415,9 @@ button:disabled, fieldset:disabled { opacity: 0.6; cursor: wait; }
 .seat-panel .seats-list { overflow: visible; flex: 0 0 auto; }
 .seat-editor { padding: 12px; border-bottom: 1px solid var(--border); }
 .seat-actions, .template-actions { margin-top: 10px; }
+.pending-action { margin-top: 10px; padding: 10px; background: var(--bg-input); border-radius: 4px; font-size: 12px; line-height: 1.7; }
+.pending-action .btn { margin-top: 6px; }
+.result-data { margin-top: 8px; font-size: 13px; color: var(--accent); overflow-wrap: anywhere; }
 .seat-title, .seat-meta, .event-title { overflow-wrap: anywhere; }
 .seat-top { gap: 8px; align-items: flex-start; }
 .badge { flex-shrink: 0; }

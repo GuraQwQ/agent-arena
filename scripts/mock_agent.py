@@ -67,7 +67,16 @@ def simulate_agent(seat: int, name: str, model: str, claim_token: str = ""):
             
             # 提交行动
             reason = f"暗中策略: 第{turn_count}次试探性表态，观察他人反应。"
-            code_act, out_act, _ = run_cmd(agent_dir, ["act", "--reason", reason])
+            pending = json.loads((agent_dir / ".agent.json").read_text(encoding="utf-8")).get("pending_action", {})
+            act_args = ["act", "--reason", reason]
+            if pending.get("action_type") in {"VOTE", "CHOOSE"}:
+                act_args.extend(["--choice", pending["options"][0]])
+            if pending.get("action_type") == "NUMBER":
+                value = pending.get("min_value")
+                if value is None:
+                    value = min(0, pending.get("max_value") or 0)
+                act_args.extend(["--value", str(value)])
+            code_act, out_act, _ = run_cmd(agent_dir, act_args)
             print(out_act)
             print("-" * 50)
 

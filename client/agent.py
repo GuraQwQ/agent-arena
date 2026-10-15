@@ -148,6 +148,10 @@ def receive_update(timeout: int):
         print(action.get("prompt", "请做出行动。"))
         if action.get("options"):
             print(f"可选分支: {', '.join(action['options'])}")
+            print('提交选择: arena act --choice "候选项"')
+        if action.get("action_type") == "NUMBER":
+            print(f"允许范围: {action.get('min_value')} 至 {action.get('max_value')}")
+            print("提交数值: arena act --value 10")
         print("-" * 60)
         print("⚡ 行动方式:")
         print("  1. 将你的陈词/决策写入本地 action.txt")
@@ -191,6 +195,23 @@ def cmd_act(args):
     elif args.content:
         content = " ".join(args.content).strip()
 
+    structured = {}
+    if args.choice is not None:
+        structured["choice"] = args.choice
+        content = content or args.choice
+    if args.value is not None:
+        structured["value"] = args.value
+        content = content or str(args.value)
+    if args.data:
+        try:
+            extra = json.loads(Path(args.data).read_text(encoding="utf-8"))
+            if not isinstance(extra, dict):
+                raise ValueError("结构化数据必须是 JSON 对象")
+            structured.update(extra)
+        except (OSError, ValueError) as exc:
+            print(f"❌ 结构化数据无效: {exc}")
+            sys.exit(EXIT_ERROR)
+
     if not content:
         print("❌ 错误: 提交内容为空！请将内容写入 action.txt 或通过命令行参数传入。")
         sys.exit(EXIT_ERROR)
@@ -200,7 +221,8 @@ def cmd_act(args):
         "token": cfg["token"],
         "action_type": args.type or cfg.get("pending_action", {}).get("action_type", "ACT"),
         "content": content,
-        "secret_reason": args.reason or None
+        "secret_reason": args.reason or None,
+        "data": structured or None
     }
 
     pending_submission = cfg.get("pending_submission", {})
@@ -281,6 +303,9 @@ def main():
     p_act = subparsers.add_parser("act", help="提交正式行动")
     p_act.add_argument("--type", type=str, help="动作类型，默认使用主持人指令")
     p_act.add_argument("--request-id", type=str, help="行动编号，默认使用最近收到的指令")
+    p_act.add_argument("--choice", type=str, help="投票或选择题的候选项")
+    p_act.add_argument("--value", type=float, help="数值决策")
+    p_act.add_argument("--data", type=str, help="结构化 JSON 数据文件")
     p_act.add_argument("--file", type=str, help="从文件读取行动内容 (默认 action.txt)")
     p_act.add_argument("--reason", type=str, help="仅主持人可见的战术动机/思考链")
     p_act.add_argument("content", nargs="*", help="命令行直接传入的内容")

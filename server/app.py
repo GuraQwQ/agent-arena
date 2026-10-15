@@ -286,7 +286,7 @@ async def player_status(
         "phase": engine.phase,
         "round": engine.round_num,
         "status": seat.status if seat else "UNKNOWN",
-        "pending_action": action.model_dump() if action else None
+        "pending_action": action.model_dump(exclude={"result_recipients"}) if action else None
     }
 
 
@@ -378,14 +378,22 @@ async def admin_command(cmd: HostCommand, request: Request):
         try:
             req = engine.dispatch_action(
                 target_seat=cmd.target_seat,
-                action_type="ACT",
+                action_type=cmd.action_type,
                 prompt=cmd.prompt or "请针对当前局势做出你的行动与分析。",
                 options=cmd.options or [],
-                timeout=cmd.timeout if cmd.timeout is not None else 60
+                timeout=cmd.timeout if cmd.timeout is not None else 60,
+                result_scope=cmd.result_scope, result_target_seat=cmd.result_target_seat,
+                result_group_id=cmd.result_group_id, min_value=cmd.min_value, max_value=cmd.max_value
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"success": True, "request": req.model_dump()}
+
+    elif c_type == "CANCEL_ACTION":
+        if cmd.target_seat is None:
+            raise ValueError("必须指定目标席位")
+        engine.cancel_action(cmd.target_seat)
+        return {"success": True}
 
     elif c_type == "BROADCAST":
         engine.record_event(

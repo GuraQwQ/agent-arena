@@ -9,6 +9,8 @@ let currentPhase = "准备中";
 let activeMsgTab = "broadcast";
 let latestSnapshot = null;
 const ADMIN_TOKEN_KEY = "arena_admin_token";
+const ACTION_NAMES = { ACT: "通用行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "选择", NUMBER: "数值" };
+const SCOPE_NAMES = { PUBLIC: "全员公开", PRIVATE: "指定席位", GROUP: "指定阵营", HOST_ONLY: "仅主持人" };
 
 // 初始化连接
 window.addEventListener("DOMContentLoaded", async () => {
@@ -162,6 +164,7 @@ function renderSeatsList(seats) {
 
   listEl.innerHTML = sids.map(sid => {
     const s = seats[sid];
+    const action = latestSnapshot?.active_actions?.[sid];
     let badgeClass = "badge-idle";
     let statusText = "空闲";
     if (s.status === "THINKING") {
@@ -184,6 +187,7 @@ function renderSeatsList(seats) {
           <div>模型: <code>${escapeHtml(s.model)}</code></div>
           <div>环境: <span>${escapeHtml(s.harness)}</span></div>
         </div>
+        ${action ? `<div class="pending-action"><strong>${escapeHtml(ACTION_NAMES[action.action_type] || action.action_type)}</strong> · ${escapeHtml(SCOPE_NAMES[action.result_scope] || action.result_scope || "全员公开")}<div>截止 ${new Date(action.deadline * 1000).toLocaleTimeString()}</div><button class="btn btn-secondary btn-sm w-100" onclick="cancelAction(${s.seat_id})">取消待办行动</button></div>` : ""}
         <div class="form-row seat-actions"><button class="btn btn-secondary btn-sm flex-1" onclick="editSeat(${s.seat_id})">编辑</button><button class="btn btn-danger btn-sm" onclick="removeSeat(${s.seat_id})">移除</button></div>
         <div style="margin-top: 10px;">
           <button class="btn btn-secondary btn-sm w-100" onclick="copyBootstrapCmd(${s.seat_id})">
@@ -211,18 +215,20 @@ function copyBootstrapCmd(seatId) {
 
 // 更新下拉框
 function updateSeatSelects(seats) {
-  for (const id of ["select-target-seat", "select-private-seat"]) {
+  for (const id of ["select-target-seat", "select-private-seat", "action-recipient"]) {
     const select = document.getElementById(id);
     const selected = select.value;
     const options = [new Option("-- 选择座次 --", ""), ...Object.values(seats).map(seat => new Option(`${seat.seat_id}号位 (${seat.name} - ${seat.model || "待连接"})`, seat.seat_id))];
     select.replaceChildren(...options);
     select.value = selected;
   }
-  const groupSelect = document.getElementById("select-message-group");
-  const selectedGroup = groupSelect.value;
   const groups = [...new Set(Object.values(seats).map(seat => seat.group_id).filter(Boolean))].sort();
-  groupSelect.replaceChildren(new Option("-- 选择阵营 --", ""), ...groups.map(group => new Option(group, group)));
-  groupSelect.value = selectedGroup;
+  for (const id of ["select-message-group", "action-team"]) {
+    const groupSelect = document.getElementById(id);
+    const selectedGroup = groupSelect.value;
+    groupSelect.replaceChildren(new Option("-- 选择阵营 --", ""), ...groups.map(group => new Option(group, group)));
+    groupSelect.value = selectedGroup;
+  }
 }
 
 function renderSettings(settings) {
@@ -277,6 +283,9 @@ function appendEvent(ev) {
   } else if (ev.scope === "GROUP") {
     tagClass = "tag-private";
     scopeTag = `<span style="color: var(--accent)">[阵营: ${escapeHtml(ev.group_id)}]</span>`;
+  } else if (ev.scope === "HOST_ONLY") {
+    tagClass = "tag-private";
+    scopeTag = '<span style="color: var(--purple)">[仅主持人]</span>';
   } else if (ev.event_type === "ACTION_REQUEST" || ev.event_type === "ACTION_SUBMIT") {
     tagClass = "tag-action";
     scopeTag = '<span style="color: var(--warning)">[行动事件]</span>';
@@ -308,6 +317,7 @@ function appendEvent(ev) {
       <div class="event-time">#${ev.seq} ${timeStr}</div>
     </div>
     <div class="event-body">${escapeHtml(ev.content)}</div>
+    ${ev.data && (Object.hasOwn(ev.data, "choice") || Object.hasOwn(ev.data, "value")) ? `<div class="result-data">${Object.hasOwn(ev.data, "choice") ? `选择：${escapeHtml(ev.data.choice)}` : `数值：${escapeHtml(String(ev.data.value))}`}</div>` : ""}
     ${secretHtml}
   `;
 
@@ -338,15 +348,56 @@ async function dispatchAction() {
   
   const prompt = document.getElementById("input-prompt").value.trim();
   const timeout = parseInt(document.getElementById("input-timeout").value) || 60;
+  const actionType = document.getElementById("action-type").value;
+  const scope = document.getElementById("action-scope").value;
+  const options = ["VOTE", "CHOOSE"].includes(actionType) ? document.getElementById("action-options").value.split("\n").map(value => value.trim()).filter(Boolean) : [];
+  if (["VOTE", "CHOOSE"].includes(actionType) && options.length < 2) return showNotice("投票或选择需要至少两个候选项", true);
+  const recipient = document.getElementById("action-recipient").value;
+  const group = document.getElementById("action-team").value;
+  if (scope === "PRIVATE" && !recipient) return showNotice("请选择结果接收席位", true);
+  if (scope === "GROUP" && !group) return showNotice("请选择结果接收阵营", true);
+  const minValue = actionType === "NUMBER" ? optionalNumber("action-min") : null;
+  const maxValue = actionType === "NUMBER" ? optionalNumber("action-max") : null;
+  if (minValue !== null && maxValue !== null && minValue > maxValue) return showNotice("最小值不能大于最大值", true);
 
   await adminRequest("/api/admin/command", {
     command_type: "DISPATCH_ACTION",
     target_seat: parseInt(targetSeat),
     prompt,
-    timeout
+    timeout,
+    action_type: actionType,
+    options,
+    result_scope: scope,
+    result_target_seat: scope === "PRIVATE" ? Number(recipient) : null,
+    result_group_id: scope === "GROUP" ? group : null,
+    min_value: minValue,
+    max_value: maxValue
   });
 
   document.getElementById("input-prompt").value = "";
+  showNotice(`已向 ${targetSeat} 号席位派发${ACTION_NAMES[actionType]}`);
+}
+
+function optionalNumber(id) {
+  const value = document.getElementById(id).value.trim();
+  if (!value) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error("数值上下界必须是有效数字");
+  return number;
+}
+
+function updateActionFields() {
+  const type = document.getElementById("action-type").value;
+  const scope = document.getElementById("action-scope").value;
+  document.getElementById("action-options-group").hidden = !["VOTE", "CHOOSE"].includes(type);
+  document.getElementById("action-number-group").hidden = type !== "NUMBER";
+  document.getElementById("action-recipient-group").hidden = scope !== "PRIVATE";
+  document.getElementById("action-team-group").hidden = scope !== "GROUP";
+}
+
+async function cancelAction(seatId) {
+  await adminRequest("/api/admin/command", { command_type: "CANCEL_ACTION", target_seat: seatId });
+  showNotice(`已取消 ${seatId} 号席位的待办行动`);
 }
 
 function switchMsgTab(tab) {

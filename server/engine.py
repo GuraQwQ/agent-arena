@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import math
 import threading
 import time
 import uuid
@@ -393,14 +394,29 @@ class ArenaEngine:
         return result
 
     @mutating
-    def dispatch_action(self, target_seat: int, action_type: str, prompt: str, options: Optional[List[str]] = None, timeout: int = 60) -> ActionRequest:
+    def dispatch_action(self, target_seat: int, action_type: str, prompt: str, options: Optional[List[str]] = None, timeout: int = 60,
+                        result_scope: VisibilityScope = VisibilityScope.PUBLIC, result_target_seat: Optional[int] = None,
+                        result_group_id: Optional[str] = None, min_value: Optional[float] = None, max_value: Optional[float] = None) -> ActionRequest:
         """主持人向指定 Agent 下达行动命令 (点名)"""
         if target_seat not in self.seats:
             raise ValueError("目标席位不存在")
-        if target_seat in self.active_actions:
+        pending = self.active_actions.get(target_seat)
+        if pending and pending.deadline <= time.time():
+            self.cancel_action(target_seat, "行动已超时")
+        elif pending:
             raise ValueError("该席位已有未完成行动")
         if timeout <= 0:
             raise ValueError("行动限时必须大于 0 秒")
+        if action_type not in {"ACT", "SPEAK", "VOTE", "CHOOSE", "NUMBER"}:
+            raise ValueError("未知行动类型")
+        if action_type in {"VOTE", "CHOOSE"} and not options:
+            raise ValueError("投票或选择题必须提供候选项")
+        if min_value is not None and max_value is not None and min_value > max_value:
+            raise ValueError("数值下限不能超过上限")
+        if result_scope == VisibilityScope.PRIVATE and result_target_seat not in self.seats:
+            raise ValueError("请指定有效的私密结果接收席位")
+        if result_scope == VisibilityScope.GROUP and not any(seat.group_id == result_group_id and result_group_id for seat in self.seats.values()):
+            raise ValueError("请指定有效的结果接收阵营")
         req_id = str(uuid.uuid4())[:8]
         req = ActionRequest(
             request_id=req_id,
@@ -409,7 +425,11 @@ class ArenaEngine:
             action_type=action_type,
             prompt=prompt,
             options=options or [],
-            deadline=time.time() + timeout
+            deadline=time.time() + timeout,
+            result_scope=result_scope, result_target_seat=result_target_seat,
+            result_group_id=result_group_id,
+            result_recipients=self._recipients(result_scope, target_seat, result_target_seat, result_group_id),
+            min_value=min_value, max_value=max_value
         )
         self.active_actions[target_seat] = req
         
@@ -432,6 +452,16 @@ class ArenaEngine:
 
         self.broadcast_host_update()
         return req
+
+    @mutating
+    def cancel_action(self, seat_id: int, reason: str = "主持人取消行动"):
+        pending = self.active_actions.pop(seat_id, None)
+        if pending is None:
+            raise ValueError("该席位没有待办行动")
+        self.seats[seat_id].status = "IDLE"
+        self.record_event("ACTION_CANCEL", f"【行动结束】{seat_id}号位", reason,
+                          to_seat=seat_id, scope=VisibilityScope.PRIVATE,
+                          data={"request_id": pending.request_id})
 
     @mutating
     def submit_action(self, seat_id: int, token: str, action_type: str, content: str, request_id: str, secret_reason: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> Event:
@@ -459,6 +489,18 @@ class ArenaEngine:
         elif not self.settings.allow_free_actions:
             raise PermissionError("当前没有待办行动")
 
+        if pending and pending.action_type in {"VOTE", "CHOOSE"}:
+            if (data or {}).get("choice") not in pending.options:
+                raise ValueError("请选择主持人提供的候选项")
+        if pending and pending.action_type == "NUMBER":
+            value = (data or {}).get("value")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError("请提交有限数值 data.value")
+            if pending.min_value is not None and value < pending.min_value:
+                raise ValueError("提交数值低于允许下限")
+            if pending.max_value is not None and value > pending.max_value:
+                raise ValueError("提交数值超过允许上限")
+
         # 检查并清除待办行动
         self.active_actions.pop(seat_id, None)
         if seat_id in self.seats:
@@ -470,10 +512,14 @@ class ArenaEngine:
             title=f"【行动提交】{seat_id}号位 完成行动 [{action_type}]",
             content=content,
             from_seat=seat_id,
-            scope=VisibilityScope.PUBLIC,
+            scope=pending.result_scope if pending else VisibilityScope.PUBLIC,
+            to_seat=pending.result_target_seat if pending else None,
+            group_id=pending.result_group_id if pending else None,
             secret_reason=secret_reason,
-            data=data or {"action_type": action_type}
+            data={**(data or {}), "action_type": action_type, "request_id": request_id}
         )
+        if pending:
+            event.recipient_seats = pending.result_recipients
         self.receipts[receipt_key] = {"event_seq": event.seq, "payload": payload}
         self.broadcast_host_update()
         return event
@@ -509,7 +555,7 @@ class ArenaEngine:
                 "room_id": self.room_id,
                 "code": 42,
                 "status": "ACTION_REQUIRED",
-                "action": action.model_dump(),
+                "action": action.model_dump(exclude={"result_recipients"}),
                 "recent_events": new_events
             }
 
@@ -559,7 +605,7 @@ class ArenaEngine:
                 "room_id": self.room_id,
                 "code": 42,
                 "status": "ACTION_REQUIRED",
-                "action": action.model_dump(),
+                "action": action.model_dump(exclude={"result_recipients"}),
                 "recent_events": recent
             }
 

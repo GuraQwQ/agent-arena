@@ -88,13 +88,24 @@
 
       <!-- 点名行动调度 -->
       <div class="control-card highlight-card">
-        <h3>2. 点名 Agent 行动 (触发退出码 42)</h3>
+        <h3>2. 点名 Agent 行动</h3>
         <div class="form-group">
           <label for="select-target-seat">目标智能体:</label>
           <select id="select-target-seat">
             <option value="">-- 选择目标座次 --</option>
           </select>
         </div>
+        <div class="form-row">
+          <div class="form-group flex-1"><label for="action-type">行动类型</label><select id="action-type" onchange="updateActionFields()"><option value="ACT">通用行动</option><option value="SPEAK">发言</option><option value="VOTE">投票</option><option value="CHOOSE">选择</option><option value="NUMBER">数值</option></select></div>
+          <div class="form-group flex-1"><label for="action-scope">结果可见范围</label><select id="action-scope" onchange="updateActionFields()"><option value="PUBLIC">全员公开</option><option value="PRIVATE">指定席位</option><option value="GROUP">指定阵营</option><option value="HOST_ONLY">仅主持人</option></select></div>
+        </div>
+        <div class="form-group" id="action-options-group" hidden><label for="action-options">候选项（每行一个）</label><textarea id="action-options" rows="3" placeholder="候选项一&#10;候选项二"></textarea></div>
+        <div class="form-row" id="action-number-group" hidden>
+          <div class="form-group flex-1"><label for="action-min">最小值</label><input id="action-min" type="number" step="any" placeholder="不限"></div>
+          <div class="form-group flex-1"><label for="action-max">最大值</label><input id="action-max" type="number" step="any" placeholder="不限"></div>
+        </div>
+        <div class="form-group" id="action-recipient-group" hidden><label for="action-recipient">结果接收席位</label><select id="action-recipient"><option value="">-- 选择座次 --</option></select></div>
+        <div class="form-group" id="action-team-group" hidden><label for="action-team">结果接收阵营</label><select id="action-team"><option value="">-- 选择阵营 --</option></select></div>
         <div class="form-group">
           <label for="input-prompt">行动指引 Prompt:</label>
           <textarea id="input-prompt" rows="3" placeholder="例如: 请依据你目前的发现进行发言，指出你怀疑的目标并陈述依据。"></textarea>

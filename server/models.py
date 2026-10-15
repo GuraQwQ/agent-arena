@@ -5,7 +5,7 @@
 
 from enum import Enum
 from uuid import uuid4
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -58,6 +58,12 @@ class ActionRequest(BaseModel):
     prompt: str = ""          # 主持人下发的行动指引与要求
     options: List[str] = []   # 可选动作列表 (如有)
     deadline: float = 0.0     # 截止时间戳
+    result_scope: VisibilityScope = VisibilityScope.PUBLIC
+    result_target_seat: Optional[int] = None
+    result_group_id: Optional[str] = None
+    result_recipients: Optional[List[int]] = None
+    min_value: Optional[float] = Field(None, allow_inf_nan=False)
+    max_value: Optional[float] = Field(None, allow_inf_nan=False)
 
 
 class ActionSubmission(BaseModel):
@@ -83,6 +89,12 @@ class HostCommand(BaseModel):
     options: Optional[List[str]] = None
     timeout: Optional[int] = Field(60, ge=1, le=86400)
     round_num: Optional[int] = Field(None, ge=1)
+    action_type: Literal["ACT", "SPEAK", "VOTE", "CHOOSE", "NUMBER"] = "ACT"
+    result_scope: VisibilityScope = VisibilityScope.PUBLIC
+    result_target_seat: Optional[int] = None
+    result_group_id: Optional[str] = None
+    min_value: Optional[float] = Field(None, allow_inf_nan=False)
+    max_value: Optional[float] = Field(None, allow_inf_nan=False)
 
 
 class ArenaSettings(BaseModel):
