@@ -12,7 +12,8 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from models import ActionRequest, ArenaSettings, Event, RoomSnapshot, Seat, VisibilityScope
+from models import ActionRequest, ArenaSettings, Event, RoomSnapshot, Scenario, Seat, SeatDefinition, VisibilityScope
+from archives import ArchiveStore
 from storage import write_json
 
 SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -54,6 +55,7 @@ def mutating(method):
 class ArenaEngine:
     def __init__(self, room_title: str = "通用多智能体竞技场", restore_from_disk: bool = True):
         self.room_title = room_title
+        self.scenario_description = ""
         self.room_id = uuid.uuid4().hex
         self.phase = "准备中"
         self.round_num = 1
@@ -112,12 +114,14 @@ class ArenaEngine:
             room_id=self.room_id, room_title=self.room_title, phase=self.phase,
             round_num=self.round_num, seq_counter=self._seq_counter, seats=self.seats,
             events=self.events, active_actions=self.active_actions,
-            last_seen_seqs=self.last_seen_seqs, settings=self.settings, receipts=self.receipts
+            last_seen_seqs=self.last_seen_seqs, settings=self.settings, receipts=self.receipts,
+            scenario_description=self.scenario_description
         )
 
     def _apply_snapshot(self, snapshot: RoomSnapshot):
         self.room_id = snapshot.room_id
         self.room_title = snapshot.room_title
+        self.scenario_description = snapshot.scenario_description
         self.phase = snapshot.phase
         self.round_num = snapshot.round_num
         self._seq_counter = snapshot.seq_counter
@@ -150,6 +154,9 @@ class ArenaEngine:
             snapshot.last_seen_seqs = {sid: 0 for sid in snapshot.seats}
             snapshot.schema_version = 2
         self._apply_snapshot(snapshot)
+        for event in self.events:
+            if event.recipient_seats is None and event.scope != VisibilityScope.PUBLIC:
+                event.recipient_seats = self._recipients(event.scope, event.from_seat, event.to_seat, event.group_id)
         for sid, seat in self.seats.items():
             if not seat.claim_token:
                 seat.claim_token = uuid.uuid4().hex
@@ -192,7 +199,6 @@ class ArenaEngine:
         if token and existing.token == token:
             # 携带有效 token 重连
             existing.name = name or existing.name
-            existing.role = role or existing.role
             existing.model = model or existing.model
             existing.harness = harness or existing.harness
             existing.last_seen = now
@@ -203,7 +209,6 @@ class ArenaEngine:
 
         if claim_token and existing.claim_token == claim_token:
             existing.name = name or existing.name
-            existing.role = role or existing.role
             existing.model = model or existing.model
             existing.harness = harness or existing.harness
             existing.last_seen = now
@@ -228,6 +233,67 @@ class ArenaEngine:
         """验证主持人发放的席位认领令牌"""
         seat = self.seats.get(seat_id)
         return bool(seat and claim_token and seat.claim_token == claim_token)
+
+    def get_scenario(self) -> Scenario:
+        return Scenario(
+            title=self.room_title, description=self.scenario_description,
+            seats=[SeatDefinition.model_validate(seat.model_dump()) for seat in self.seats.values()],
+            settings=self.settings
+        )
+
+    @mutating
+    def update_seat(self, definition: SeatDefinition):
+        seat = self.seats.get(definition.seat_id)
+        if seat is None:
+            if len(self.seats) >= 64:
+                raise ValueError("最多支持 64 个席位")
+            seat = Seat(seat_id=definition.seat_id, token=uuid.uuid4().hex, claim_token=uuid.uuid4().hex)
+            self.seats[seat.seat_id] = seat
+            self.last_seen_seqs[seat.seat_id] = 0
+        for key, value in definition.model_dump().items():
+            setattr(seat, key, value)
+        return seat
+
+    @mutating
+    def remove_seat(self, seat_id: int):
+        if seat_id not in self.seats:
+            raise ValueError("席位不存在")
+        if len(self.seats) == 1:
+            raise ValueError("至少保留一个席位")
+        if seat_id in self.active_actions:
+            raise ValueError("请先完成或取消该席位的待办行动")
+        self.seats.pop(seat_id)
+        self.last_seen_seqs.pop(seat_id, None)
+
+    @mutating
+    def load_scenario(self, scenario: Scenario):
+        self.reset()
+        self.room_title = scenario.title
+        self.scenario_description = scenario.description
+        self.settings = scenario.settings.model_copy(deep=True)
+        self.seats = {}
+        self.last_seen_seqs = {}
+        for seat in scenario.seats:
+            self.update_seat(seat)
+
+    def _recipients(self, scope, from_seat=None, to_seat=None, group_id=None):
+        if scope == VisibilityScope.PUBLIC:
+            return None
+        if scope == VisibilityScope.PRIVATE:
+            return sorted({sid for sid in (from_seat, to_seat) if sid is not None})
+        if scope == VisibilityScope.GROUP:
+            return [sid for sid, seat in self.seats.items() if group_id and seat.group_id == group_id]
+        return []
+
+    @mutating
+    def update_settings(self, fields: dict):
+        self.settings = ArenaSettings.model_validate({**self.settings.model_dump(), **fields})
+
+    @mutating
+    def advance_phase(self, phase: Optional[str], round_num: Optional[int]):
+        self.phase = phase or self.phase
+        self.round_num = round_num if round_num is not None else self.round_num
+        self.record_event("PHASE_CHANGE", f"【阶段变更】进入阶段: {self.phase}", f"主持人已将当前场景切换为: {self.phase}")
 
     @mutating
     def record_event(
@@ -254,6 +320,7 @@ class ArenaEngine:
             to_seat=to_seat,
             group_id=group_id,
             scope=scope,
+            recipient_seats=self._recipients(scope, from_seat, to_seat, group_id),
             secret_reason=secret_reason,
             data=data or {}
         )
@@ -289,12 +356,11 @@ class ArenaEngine:
         
         # 私信定向
         if event.scope == VisibilityScope.PRIVATE:
-            return event.to_seat == seat_id or event.from_seat == seat_id
+            return seat_id in (event.recipient_seats or [])
         
         # 分组阵营
         if event.scope == VisibilityScope.GROUP:
-            seat = self.seats.get(seat_id)
-            return bool(seat and seat.group_id and seat.group_id == event.group_id)
+            return seat_id in (event.recipient_seats or [])
             
         return False
 
@@ -535,10 +601,13 @@ class ArenaEngine:
     @mutating
     def reset(self):
         """在保留现有 SSE 连接的情况下重置房间"""
+        if self.events or self.active_actions:
+            ArchiveStore(SNAPSHOT_FILE.parent / "archives").save(self.snapshot().model_dump(mode="json"))
         self._reset_generation += 1
         self.room_id = uuid.uuid4().hex
         self.receipts = {}
         self.phase = "准备中"
+        self.scenario_description = ""
         self.round_num = 1
         self.settings = ArenaSettings()
         self.seats = {}
@@ -555,6 +624,7 @@ class ArenaEngine:
         return {
             "room_id": self.room_id,
             "room_title": self.room_title,
+            "scenario_description": self.scenario_description,
             "phase": self.phase,
             "round_num": self.round_num,
             "settings": self.settings.model_dump(),

@@ -6,7 +6,7 @@
 from enum import Enum
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class VisibilityScope(str, Enum):
@@ -29,6 +29,7 @@ class Event(BaseModel):
     to_seat: Optional[int] = Field(None, description="接收者座次 (PRIVATE 模式时必填)")
     group_id: Optional[str] = Field(None, description="所属分组 (GROUP 模式时使用)")
     scope: VisibilityScope = Field(VisibilityScope.PUBLIC, description="可见性范围")
+    recipient_seats: Optional[List[int]] = None
     secret_reason: Optional[str] = Field(None, description="仅主持人可见的深层思考链/战术意图")
     data: Optional[Dict[str, Any]] = Field(default_factory=dict, description="结构化附加元数据")
 
@@ -75,6 +76,7 @@ class HostCommand(BaseModel):
     command_type: str  # ADVANCE_PHASE, BROADCAST, SEND_PRIVATE, DISPATCH_ACTION, RESET
     phase: Optional[str] = None
     target_seat: Optional[int] = None
+    group_id: Optional[str] = None
     content: Optional[str] = None
     secret_reason: Optional[str] = None
     prompt: Optional[str] = None
@@ -97,11 +99,34 @@ class ArenaSettingsUpdate(BaseModel):
     history_seconds: Optional[int] = Field(None, ge=1)
 
 
+class SeatDefinition(BaseModel):
+    seat_id: int = Field(..., ge=1)
+    name: str = Field("", max_length=200)
+    role: str = Field("玩家", max_length=200)
+    group_id: Optional[str] = Field(None, max_length=200)
+    init_prompt: str = ""
+
+
+class Scenario(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str = ""
+    seats: List[SeatDefinition] = Field(..., min_length=1, max_length=64)
+    settings: ArenaSettings = Field(default_factory=ArenaSettings)
+
+    @model_validator(mode="after")
+    def unique_seats(self):
+        ids = [seat.seat_id for seat in self.seats]
+        if len(ids) != len(set(ids)):
+            raise ValueError("剧本中的席位编号不能重复")
+        return self
+
+
 class RoomSnapshot(BaseModel):
     """落盘持久化快照模型"""
     schema_version: int = 2
     room_id: str = Field(default_factory=lambda: uuid4().hex)
     room_title: str
+    scenario_description: str = ""
     phase: str
     round_num: int
     seq_counter: int

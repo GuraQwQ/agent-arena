@@ -1,0 +1,10 @@
+{
+  "title": "多方评审议会",
+  "description": "主持人提供议题，各角色先独立分析，再公开讨论。",
+  "seats": [
+    {"seat_id": 1, "name": "方案评审", "role": "分析者", "group_id": null, "init_prompt": "分析方案的可行性，列出可验证的依据。"},
+    {"seat_id": 2, "name": "反方评审", "role": "质疑者", "group_id": null, "init_prompt": "寻找方案的边界条件和反例。"},
+    {"seat_id": 3, "name": "综合评审", "role": "协调者", "group_id": null, "init_prompt": "比较观点，提出最小可执行建议。"}
+  ],
+  "settings": {"allow_free_actions": false, "history_rounds": null, "history_seconds": null}
+}

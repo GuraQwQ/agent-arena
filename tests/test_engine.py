@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 import engine
 
 
-class EngineTest(unittest.TestCase):
+class EngineCase(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -22,6 +22,8 @@ class EngineTest(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         self.room = engine.ArenaEngine(restore_from_disk=False)
 
+
+class EngineTest(EngineCase):
     def test_delivery_is_repeated_until_acknowledged(self):
         self.room.record_event("ANNOUNCEMENT", "消息", "线索")
         token = self.room.seats[1].token

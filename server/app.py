@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from engine import ArenaEngine
-from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, HostCommand, VisibilityScope
+from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, HostCommand, Scenario, SeatDefinition, VisibilityScope
 from cli_mount import mount_cli, unmount_cli
 
 
@@ -53,6 +53,11 @@ app = FastAPI(title="Agent Arena", description="通用多智能体独立操作�
 async def storage_error(request: Request, exc: OSError):
     print(f"快照写入失败: {exc}", file=sys.stderr)
     return JSONResponse(status_code=503, content={"detail": "状态保存失败，请检查存储后重试；本次操作尚未提交"})
+
+
+@app.exception_handler(ValueError)
+async def invalid_operation(request: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 # 启用 CORS
 app.add_middleware(
@@ -98,6 +103,7 @@ async def get_player_bootstrap(seat_id: int, request: Request, claim_token: str 
         "role": seat.role,
         "init_prompt": seat.init_prompt,
         "room_title": engine.room_title,
+        "room_id": engine.room_id,
         "server": base_url
     }
 
@@ -116,6 +122,8 @@ async def get_bootstrap_script(seat_id: int, request: Request, claim_token: str 
 """Agent Arena 一键自举装配器 (席位: {seat_id})"""
 import urllib.request
 import json
+import os
+import tempfile
 from pathlib import Path
 
 SERVER = "{base_url}"
@@ -124,16 +132,20 @@ CLAIM_TOKEN = "{claim_token}"
 
 print(f"🚀 正在连接竞技场服务器 {{SERVER}} 接入 {{SEAT}}号席位...")
 
-# 1. 下载 client/agent.py (若不存在)
+# 1. 原子更新项目管理的客户端，重复执行可恢复部分安装
 agent_py = Path("agent.py")
-if not agent_py.exists():
-    url_client = f"{{SERVER}}/client/agent.py"
-    try:
-        content = urllib.request.urlopen(url_client).read().decode("utf-8")
-        agent_py.write_text(content, encoding="utf-8")
-        print("  ✓ 已下载 agent.py 客户端")
-    except Exception as e:
-        print(f"  ❌ 下载 agent.py 失败: {{e}}")
+content = urllib.request.urlopen(f"{{SERVER}}/client/agent.py", timeout=30).read().decode("utf-8")
+compile(content, "agent.py", "exec")
+descriptor, temporary = tempfile.mkstemp(prefix=".agent-install-", dir=Path.cwd())
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    Path(temporary).replace(agent_py)
+finally:
+    Path(temporary).unlink(missing_ok=True)
+print("  ✓ 已更新 agent.py 客户端")
 
 # 2. 拉取席位设定
 try:
@@ -141,8 +153,13 @@ try:
     data = json.loads(urllib.request.urlopen(url_boot).read().decode("utf-8"))
     
     # 写入 .agent.json
-    cfg = {{"server": SERVER, "seat": SEAT, "token": data["token"]}}
-    Path(".agent.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    import runpy
+    client = runpy.run_path(str(agent_py))
+    cfg = client["load_config"]()
+    if cfg.get("token") != data["token"]:
+        cfg = {{}}
+    cfg.update({{"server": SERVER, "seat": SEAT, "token": data["token"], "room_id": data["room_id"]}})
+    client["save_config"](cfg)
     print("  ✓ 已配置 .agent.json 身份令牌")
 
     # 写入 memory.md
@@ -152,7 +169,8 @@ try:
         f"## 专属目标与初始设定\\n{{data['init_prompt']}}\\n\\n"
         f"## 局势推演笔记\\n"
     )
-    mem.write_text(init_notes, encoding="utf-8")
+    if not mem.exists():
+        mem.write_text(init_notes, encoding="utf-8")
     print("  ✓ 已初始化 memory.md 私有笔记")
 
     print("=" * 60)
@@ -351,17 +369,7 @@ async def admin_command(cmd: HostCommand, request: Request):
     c_type = cmd.command_type.upper()
     
     if c_type == "ADVANCE_PHASE":
-        if cmd.phase:
-            engine.phase = cmd.phase
-        if cmd.round_num is not None:
-            engine.round_num = cmd.round_num
-        engine.record_event(
-            event_type="PHASE_CHANGE",
-            title=f"【阶段变更】进入阶段: {engine.phase}",
-            content=f"主持人已将当前场景切换为: {engine.phase}",
-            scope=VisibilityScope.PUBLIC
-        )
-        engine.broadcast_host_update()
+        engine.advance_phase(cmd.phase, cmd.round_num)
         return {"success": True, "phase": engine.phase}
 
     elif c_type == "DISPATCH_ACTION":
@@ -402,6 +410,13 @@ async def admin_command(cmd: HostCommand, request: Request):
         )
         return {"success": True}
 
+    elif c_type == "SEND_GROUP":
+        if not cmd.group_id or not any(seat.group_id == cmd.group_id for seat in engine.seats.values()):
+            raise HTTPException(status_code=400, detail="目标阵营不存在")
+        engine.record_event("GROUP_MESSAGE", f"【阵营消息】{cmd.group_id}", cmd.content or "",
+                            group_id=cmd.group_id, scope=VisibilityScope.GROUP)
+        return {"success": True}
+
     elif c_type == "RESET":
         engine.reset()
         engine.broadcast_host_update()
@@ -435,16 +450,38 @@ async def admin_settings(request: Request):
 @app.post("/api/admin/settings")
 async def update_admin_settings(update: ArenaSettingsUpdate, request: Request):
     require_admin(request)
-    fields = update.model_fields_set
-    if "allow_free_actions" in fields:
-        engine.settings.allow_free_actions = bool(update.allow_free_actions)
-    if "history_rounds" in fields:
-        engine.settings.history_rounds = update.history_rounds
-    if "history_seconds" in fields:
-        engine.settings.history_seconds = update.history_seconds
-    engine.save_snapshot()
-    engine.broadcast_host_update()
+    fields = update.model_dump(exclude_unset=True)
+    if fields.get("allow_free_actions") is None:
+        fields.pop("allow_free_actions", None)
+    engine.update_settings(fields)
     return {"success": True, "settings": engine.settings.model_dump()}
+
+
+@app.post("/api/admin/seats")
+async def admin_update_seat(definition: SeatDefinition, request: Request):
+    require_admin(request)
+    seat = engine.update_seat(definition)
+    return {"success": True, "seat": seat.model_dump(exclude={"token"})}
+
+
+@app.delete("/api/admin/seats/{seat_id}")
+async def admin_remove_seat(seat_id: int, request: Request):
+    require_admin(request)
+    engine.remove_seat(seat_id)
+    return {"success": True}
+
+
+@app.get("/api/admin/scenario")
+async def admin_scenario(request: Request):
+    require_admin(request)
+    return engine.get_scenario().model_dump(mode="json")
+
+
+@app.post("/api/admin/scenario")
+async def admin_load_scenario(scenario: Scenario, request: Request):
+    require_admin(request)
+    engine.load_scenario(scenario)
+    return {"success": True, "room_id": engine.room_id}
 
 
 # 挂载静态文件与默认页面

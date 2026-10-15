@@ -20,14 +20,30 @@
     </div>
   </header>
 
+  <div id="action-notice" class="action-notice" role="status" aria-live="polite" hidden></div>
   <!-- 主控制网格 -->
   <main class="dashboard-grid">
     <!-- 左栏: 座次与智能体监控 -->
     <aside class="panel seat-panel">
       <div class="panel-header">
         <h2>智能体座次 (<span id="seat-count">0</span>)</h2>
-        <span class="sub-hint">物理目录隔离运行</span>
+        <button class="btn btn-secondary btn-sm" onclick="newSeat()">新增席位</button>
       </div>
+      <details id="seat-editor" class="seat-editor">
+        <summary>编辑席位</summary>
+        <form id="seat-form" onsubmit="saveSeat(event)">
+          <fieldset id="seat-fields">
+            <div class="form-row">
+              <div class="form-group flex-1"><label for="seat-id">席位号</label><input id="seat-id" type="number" min="1" max="64" required></div>
+              <div class="form-group flex-1"><label for="seat-name">名称</label><input id="seat-name" required maxlength="100"></div>
+            </div>
+            <div class="form-group"><label for="seat-role">角色</label><input id="seat-role" maxlength="100"></div>
+            <div class="form-group"><label for="seat-group">阵营</label><input id="seat-group" maxlength="100" placeholder="留空表示未分组"></div>
+            <div class="form-group"><label for="seat-prompt">专属目标与初始化提示</label><textarea id="seat-prompt" rows="4"></textarea></div>
+            <div class="form-row"><button type="submit" class="btn btn-primary flex-1">保存席位</button><button type="button" class="btn btn-secondary" onclick="closeSeatEditor()">取消</button></div>
+          </fieldset>
+        </form>
+      </details>
       <div class="seats-list" id="seats-list">
         <div class="empty-state">暂无 Agent 入座，等待连接...</div>
       </div>
@@ -48,11 +64,24 @@
 
     <!-- 右栏: 主持人操作中枢 -->
     <aside class="panel control-panel">
+      <details class="control-card" id="scenario-editor">
+        <summary>剧本与模板</summary>
+        <form id="scenario-form" onsubmit="applyScenario(event)">
+          <fieldset id="scenario-fields">
+            <div class="form-group"><label for="scenario-title">剧本标题</label><input id="scenario-title" maxlength="200" required></div>
+            <div class="form-group"><label for="scenario-description">剧本说明</label><textarea id="scenario-description" rows="3"></textarea></div>
+            <p class="field-hint">应用剧本将归档当前对局并开启新局。</p>
+            <button class="btn btn-primary w-100" type="submit">应用剧本并开新局</button>
+            <div class="form-row template-actions"><button type="button" class="btn btn-secondary flex-1" onclick="exportScenario()">导出模板</button><button type="button" class="btn btn-secondary flex-1" onclick="document.getElementById('scenario-file').click()">导入模板</button></div>
+            <label for="scenario-file" class="sr-only">导入剧本 JSON 文件</label><input id="scenario-file" type="file" accept=".json,application/json" onchange="importScenario(event)" hidden>
+          </fieldset>
+        </form>
+      </details>
       <!-- 阶段调度 -->
       <div class="control-card">
         <h3>1. 推进场景阶段</h3>
         <div class="form-row">
-          <input type="text" id="input-phase" placeholder="输入阶段名，例如: 自由调查/圆桌辩论/决战投票" value="第1轮: 自由陈述">
+          <label for="input-phase" class="sr-only">新阶段名称</label><input type="text" id="input-phase" placeholder="输入阶段名，例如: 自由调查/圆桌辩论/决战投票" value="第1轮: 自由陈述">
           <button class="btn btn-primary" onclick="advancePhase()">变更阶段</button>
         </div>
       </div>
@@ -61,22 +90,22 @@
       <div class="control-card highlight-card">
         <h3>2. 点名 Agent 行动 (触发退出码 42)</h3>
         <div class="form-group">
-          <label>目标智能体:</label>
+          <label for="select-target-seat">目标智能体:</label>
           <select id="select-target-seat">
             <option value="">-- 选择目标座次 --</option>
           </select>
         </div>
         <div class="form-group">
-          <label>行动指引 Prompt:</label>
+          <label for="input-prompt">行动指引 Prompt:</label>
           <textarea id="input-prompt" rows="3" placeholder="例如: 请依据你目前的发现进行发言，指出你怀疑的目标并陈述依据。"></textarea>
         </div>
         <div class="form-row">
           <div class="form-group flex-1">
-            <label>当前回合:</label>
+            <label for="input-round">当前回合:</label>
             <input type="number" id="input-round" value="1" min="1">
           </div>
           <div class="form-group flex-1">
-            <label>限时 (秒):</label>
+            <label for="input-timeout">限时 (秒):</label>
             <input type="number" id="input-timeout" value="60" min="10" max="300">
           </div>
           <button class="btn btn-action" onclick="dispatchAction()">⚡ 发出行动指令</button>
@@ -89,14 +118,17 @@
         <div class="tab-headers">
           <button class="tab-btn active" id="tab-broadcast" onclick="switchMsgTab('broadcast')">📢 公共广播</button>
           <button class="tab-btn" id="tab-private" onclick="switchMsgTab('private')">🔒 定向私密线索</button>
+          <button class="tab-btn" id="tab-group" onclick="switchMsgTab('group')">阵营消息</button>
         </div>
         <div class="form-group" id="group-private-seat" style="display: none;">
-          <label>私信接收人:</label>
+          <label for="select-private-seat">私信接收人:</label>
           <select id="select-private-seat">
             <option value="">-- 选择接收座次 --</option>
           </select>
         </div>
+        <div class="form-group" id="group-message-target" hidden><label for="select-message-group">接收阵营:</label><select id="select-message-group"><option value="">-- 选择阵营 --</option></select></div>
         <div class="form-group">
+          <label for="input-msg-content">消息内容</label>
           <textarea id="input-msg-content" rows="3" placeholder="输入广播剧情或该 Agent 独享的秘密线索..."></textarea>
         </div>
         <button class="btn btn-secondary w-100" onclick="sendMessage()">发送消息</button>
@@ -110,11 +142,11 @@
         </div>
         <div class="form-row">
           <div class="form-group flex-1">
-            <label>保留回合数:</label>
+            <label for="setting-history-rounds">保留回合数:</label>
             <input type="number" id="setting-history-rounds" min="1" placeholder="不过期">
           </div>
           <div class="form-group flex-1">
-            <label>保留秒数:</label>
+            <label for="setting-history-seconds">保留秒数:</label>
             <input type="number" id="setting-history-seconds" min="1" placeholder="不过期">
           </div>
         </div>

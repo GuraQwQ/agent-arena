@@ -7,15 +7,28 @@ let eventSource = null;
 let currentSeats = {};
 let currentPhase = "准备中";
 let activeMsgTab = "broadcast";
+let latestSnapshot = null;
 const ADMIN_TOKEN_KEY = "arena_admin_token";
 
 // 初始化连接
 window.addEventListener("DOMContentLoaded", async () => {
-  if (await ensureAdminSession()) {
-    connectSSE();
-  } else {
-    document.getElementById("conn-pill").textContent = "等待主持人令牌";
+  document.addEventListener("input", (event) => {
+    if (event.target.matches("input, textarea, select")) event.target.dataset.dirty = "true";
+  });
+  try {
+    if (await ensureAdminSession()) {
+      connectSSE();
+    } else {
+      document.getElementById("conn-pill").textContent = "等待主持人令牌";
+    }
+  } catch (error) {
+    showNotice(error.message, true);
   }
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  showNotice(event.reason?.message || "请求失败，请重试", true);
+  event.preventDefault();
 });
 
 async function ensureAdminSession() {
@@ -43,6 +56,37 @@ function adminFetch(url, options = {}) {
   const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
   if (token) headers.set("X-Admin-Token", token);
   return fetch(url, { ...options, headers });
+}
+
+async function adminRequest(url, body, method = "POST") {
+  const response = await adminFetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : `请求失败 (${response.status})`);
+  }
+  return data;
+}
+
+function showNotice(message, isError = false) {
+  const notice = document.getElementById("action-notice");
+  notice.textContent = message;
+  notice.classList.toggle("notice-error", isError);
+  notice.hidden = false;
+}
+
+function syncInput(id, value, checkbox = false) {
+  const input = document.getElementById(id);
+  if (input.dataset.dirty || document.activeElement === input) return;
+  input[checkbox ? "checked" : "value"] = value;
+}
+
+function clearDirty(ids) {
+  ids.forEach(id => delete document.getElementById(id).dataset.dirty);
 }
 
 function connectSSE() {
@@ -80,9 +124,12 @@ function connectSSE() {
 
 // 渲染快照
 function renderSnapshot(data) {
+  latestSnapshot = data;
   currentPhase = data.phase || "准备中";
   document.getElementById("current-phase").textContent = currentPhase;
-  document.getElementById("input-round").value = data.round_num || 1;
+  syncInput("input-round", data.round_num || 1);
+  syncInput("scenario-title", data.room_title || "竞技场剧本");
+  syncInput("scenario-description", data.scenario_description || "");
   currentSeats = data.seats || {};
   renderSettings(data.settings || {});
 
@@ -133,9 +180,11 @@ function renderSeatsList(seats) {
         </div>
         <div class="seat-meta">
           <div>身份: <strong>${escapeHtml(s.role)}</strong></div>
+          <div>阵营: <strong>${escapeHtml(s.group_id || "未分组")}</strong></div>
           <div>模型: <code>${escapeHtml(s.model)}</code></div>
           <div>环境: <span>${escapeHtml(s.harness)}</span></div>
         </div>
+        <div class="form-row seat-actions"><button class="btn btn-secondary btn-sm flex-1" onclick="editSeat(${s.seat_id})">编辑</button><button class="btn btn-danger btn-sm" onclick="removeSeat(${s.seat_id})">移除</button></div>
         <div style="margin-top: 10px;">
           <button class="btn btn-secondary btn-sm w-100" onclick="copyBootstrapCmd(${s.seat_id})">
             📋 复制 Agent 启动指令
@@ -162,29 +211,24 @@ function copyBootstrapCmd(seatId) {
 
 // 更新下拉框
 function updateSeatSelects(seats) {
-  const targetSelect = document.getElementById("select-target-seat");
-  const privateSelect = document.getElementById("select-private-seat");
-  
-  const currentTarget = targetSelect.value;
-  const currentPrivate = privateSelect.value;
-
-  const optionsHtml = '<option value="">-- 选择目标座次 --</option>' + 
-    Object.keys(seats).map(sid => {
-      const s = seats[sid];
-      return `<option value="${s.seat_id}">${s.seat_id}号位 (${s.name} - ${s.model})</option>`;
-    }).join("");
-
-  targetSelect.innerHTML = optionsHtml;
-  privateSelect.innerHTML = optionsHtml;
-
-  if (currentTarget) targetSelect.value = currentTarget;
-  if (currentPrivate) privateSelect.value = currentPrivate;
+  for (const id of ["select-target-seat", "select-private-seat"]) {
+    const select = document.getElementById(id);
+    const selected = select.value;
+    const options = [new Option("-- 选择座次 --", ""), ...Object.values(seats).map(seat => new Option(`${seat.seat_id}号位 (${seat.name} - ${seat.model || "待连接"})`, seat.seat_id))];
+    select.replaceChildren(...options);
+    select.value = selected;
+  }
+  const groupSelect = document.getElementById("select-message-group");
+  const selectedGroup = groupSelect.value;
+  const groups = [...new Set(Object.values(seats).map(seat => seat.group_id).filter(Boolean))].sort();
+  groupSelect.replaceChildren(new Option("-- 选择阵营 --", ""), ...groups.map(group => new Option(group, group)));
+  groupSelect.value = selectedGroup;
 }
 
 function renderSettings(settings) {
-  document.getElementById("setting-free-actions").checked = Boolean(settings.allow_free_actions);
-  document.getElementById("setting-history-rounds").value = settings.history_rounds ?? "";
-  document.getElementById("setting-history-seconds").value = settings.history_seconds ?? "";
+  syncInput("setting-free-actions", Boolean(settings.allow_free_actions), true);
+  syncInput("setting-history-rounds", settings.history_rounds ?? "");
+  syncInput("setting-history-seconds", settings.history_seconds ?? "");
 }
 
 function nullablePositiveInt(id) {
@@ -209,6 +253,8 @@ async function saveSettings() {
       })
     });
     if (!res.ok) throw new Error((await res.text()) || "保存设置失败");
+    clearDirty(["setting-free-actions", "setting-history-rounds", "setting-history-seconds"]);
+    showNotice("房间设置已保存");
   } catch (err) {
     alert(err.message || "保存设置失败");
   }
@@ -228,6 +274,9 @@ function appendEvent(ev) {
   if (ev.scope === "PRIVATE") {
     tagClass = "tag-private";
     scopeTag = `<span style="color: var(--accent)">[私信: ${ev.to_seat}号位]</span>`;
+  } else if (ev.scope === "GROUP") {
+    tagClass = "tag-private";
+    scopeTag = `<span style="color: var(--accent)">[阵营: ${escapeHtml(ev.group_id)}]</span>`;
   } else if (ev.event_type === "ACTION_REQUEST" || ev.event_type === "ACTION_SUBMIT") {
     tagClass = "tag-action";
     scopeTag = '<span style="color: var(--warning)">[行动事件]</span>';
@@ -242,7 +291,7 @@ function appendEvent(ev) {
   if (ev.secret_reason) {
     secretHtml = `
       <div class="secret-box">
-        <strong>💡 隐藏思考链 / 战术意图 (仅主持人可见):</strong>
+        <strong>战术意图 (仅主持人可见):</strong>
         <div>${escapeHtml(ev.secret_reason)}</div>
       </div>
     `;
@@ -274,15 +323,13 @@ async function advancePhase() {
   const phase = document.getElementById("input-phase").value.trim();
   if (!phase) return alert("阶段名不能为空");
   
-  await adminFetch("/api/admin/command", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      command_type: "ADVANCE_PHASE",
-      phase: phase,
-      round_num: parseInt(document.getElementById("input-round").value) || 1
-    })
+  await adminRequest("/api/admin/command", {
+    command_type: "ADVANCE_PHASE",
+    phase,
+    round_num: parseInt(document.getElementById("input-round").value) || 1
   });
+  clearDirty(["input-round"]);
+  showNotice(`已切换到 ${phase}`);
 }
 
 async function dispatchAction() {
@@ -292,15 +339,11 @@ async function dispatchAction() {
   const prompt = document.getElementById("input-prompt").value.trim();
   const timeout = parseInt(document.getElementById("input-timeout").value) || 60;
 
-  await adminFetch("/api/admin/command", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      command_type: "DISPATCH_ACTION",
-      target_seat: parseInt(targetSeat),
-      prompt: prompt,
-      timeout: timeout
-    })
+  await adminRequest("/api/admin/command", {
+    command_type: "DISPATCH_ACTION",
+    target_seat: parseInt(targetSeat),
+    prompt,
+    timeout
   });
 
   document.getElementById("input-prompt").value = "";
@@ -308,48 +351,141 @@ async function dispatchAction() {
 
 function switchMsgTab(tab) {
   activeMsgTab = tab;
-  document.getElementById("tab-broadcast").classList.toggle("active", tab === "broadcast");
-  document.getElementById("tab-private").classList.toggle("active", tab === "private");
+  for (const name of ["broadcast", "private", "group"]) {
+    document.getElementById(`tab-${name}`).classList.toggle("active", tab === name);
+    document.getElementById(`tab-${name}`).setAttribute("aria-pressed", String(tab === name));
+  }
   document.getElementById("group-private-seat").style.display = tab === "private" ? "block" : "none";
+  document.getElementById("group-message-target").hidden = tab !== "group";
 }
 
 async function sendMessage() {
   const content = document.getElementById("input-msg-content").value.trim();
   if (!content) return alert("消息内容不能为空");
 
-  if (activeMsgTab === "broadcast") {
-    await adminFetch("/api/admin/command", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        command_type: "BROADCAST",
-        content: content
-      })
-    });
-  } else {
+  const command = { command_type: "BROADCAST", content };
+  if (activeMsgTab === "private") {
     const seat = document.getElementById("select-private-seat").value;
     if (!seat) return alert("请选择私信接收人");
-    await adminFetch("/api/admin/command", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        command_type: "SEND_PRIVATE",
-        target_seat: parseInt(seat),
-        content: content
-      })
-    });
+    command.command_type = "SEND_PRIVATE";
+    command.target_seat = Number(seat);
+  } else if (activeMsgTab === "group") {
+    const group = document.getElementById("select-message-group").value;
+    if (!group) return alert("请先为席位配置阵营，再选择接收阵营");
+    command.command_type = "SEND_GROUP";
+    command.group_id = group;
   }
-
+  await adminRequest("/api/admin/command", command);
   document.getElementById("input-msg-content").value = "";
+  showNotice("消息已发送");
 }
 
 async function resetRoom() {
-  if (!confirm("确定要重置当前竞技场房间吗？所有座次和记录将被清空。")) return;
-  await adminFetch("/api/admin/command", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ command_type: "RESET" })
-  });
+  if (!confirm("确定开启新局吗？当前对局将归档，席位令牌将重新生成。")) return;
+  await adminRequest("/api/admin/command", { command_type: "RESET" });
+  showNotice("已归档当前对局并开启新局");
+}
+
+function newSeat() {
+  if (Object.keys(currentSeats).length >= 64) return showNotice("每个剧本最多可配置 64 个席位", true);
+  const id = Array.from({ length: 64 }, (_, index) => index + 1).find(value => !currentSeats[value]);
+  editSeat(id);
+}
+
+function editSeat(id) {
+  const seat = currentSeats[id] || { seat_id: id };
+  for (const [field, value] of Object.entries({ "seat-id": seat.seat_id, "seat-name": seat.name || "", "seat-role": seat.role || "", "seat-group": seat.group_id || "", "seat-prompt": seat.init_prompt || "" })) {
+    document.getElementById(field).value = value;
+  }
+  document.getElementById("seat-id").readOnly = Boolean(currentSeats[id]);
+  const editor = document.getElementById("seat-editor");
+  editor.open = true;
+  editor.scrollIntoView({ block: "nearest" });
+  document.getElementById("seat-name").focus();
+}
+
+function closeSeatEditor() {
+  document.getElementById("seat-editor").open = false;
+}
+
+async function saveSeat(event) {
+  event.preventDefault();
+  const fields = document.getElementById("seat-fields");
+  fields.disabled = true;
+  try {
+    await adminRequest("/api/admin/seats", {
+      seat_id: Number(document.getElementById("seat-id").value),
+      name: document.getElementById("seat-name").value.trim(),
+      role: document.getElementById("seat-role").value.trim(),
+      group_id: document.getElementById("seat-group").value.trim() || null,
+      init_prompt: document.getElementById("seat-prompt").value
+    });
+    closeSeatEditor();
+    showNotice("席位配置已保存");
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    fields.disabled = false;
+  }
+}
+
+async function removeSeat(id) {
+  if (!confirm(`确定移除 ${id} 号席位吗？该席位的连接凭据将失效，已有事件会保留。`)) return;
+  await adminRequest(`/api/admin/seats/${id}`, undefined, "DELETE");
+  if (Number(document.getElementById("seat-id").value) === id) closeSeatEditor();
+  showNotice(`已移除 ${id} 号席位`);
+}
+
+async function applyScenario(event) {
+  event.preventDefault();
+  if (!confirm("应用剧本并开启新局？当前对局将归档，Agent 需要使用新的启动指令连接。")) return;
+  const fields = document.getElementById("scenario-fields");
+  fields.disabled = true;
+  try {
+    const scenario = await adminRequest("/api/admin/scenario", undefined, "GET");
+    scenario.title = document.getElementById("scenario-title").value.trim();
+    scenario.description = document.getElementById("scenario-description").value;
+    await adminRequest("/api/admin/scenario", scenario);
+    clearDirty(["scenario-title", "scenario-description", "input-round"]);
+    showNotice("剧本已应用，新局已开启");
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    fields.disabled = false;
+  }
+}
+
+async function exportScenario() {
+  const scenario = await adminRequest("/api/admin/scenario", undefined, "GET");
+  const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "arena-scenario.json";
+  link.click();
+  URL.revokeObjectURL(url);
+  showNotice("剧本模板已导出");
+}
+
+async function importScenario(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const fields = document.getElementById("scenario-fields");
+  try {
+    const scenario = JSON.parse(await file.text());
+    if (!scenario || typeof scenario.title !== "string" || !Array.isArray(scenario.seats)) throw new Error("模板需要包含 title 标题和 seats 席位列表");
+    if (!confirm(`导入「${scenario.title}」并开启新局？当前对局将归档。`)) return;
+    fields.disabled = true;
+    await adminRequest("/api/admin/scenario", scenario);
+    clearDirty(["scenario-title", "scenario-description", "input-round"]);
+    syncInput("scenario-title", scenario.title);
+    syncInput("scenario-description", scenario.description || "");
+    showNotice("剧本模板已导入，新局已开启");
+  } catch (error) {
+    showNotice(error instanceof SyntaxError ? "模板不是有效的 JSON 文件" : error.message, true);
+  } finally {
+    fields.disabled = false;
+    event.target.value = "";
+  }
 }
 
 function escapeHtml(str) {
