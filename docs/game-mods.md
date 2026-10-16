@@ -47,6 +47,10 @@ games/某模块/
 }
 ```
 
+`settings` 是 Mod 管理器可编辑的声明式设置。每项必须有 `type`、`label` 和 `default`，支持 `boolean`、`integer`、`number`、`string`、`text`、`color`、`select`；数值可声明 `min`、`max`、`step`，选择项声明 `options`，需要重新加载规则的设置标记 `restart_required: true`。设置值按 Mod 编号保存到房间快照，不混入通用房间设置。控制台会生成对应控件、显示说明和重载提示，服务端再次校验类型与范围。
+
+Mod 运行时可声明 `configure(settings, context)` 接收变更后的命名空间值；`context.settings` 只包含当前 Mod 设置，`context.get(name, fallback)` 用于读取。没有 `configure` 的 Mod 仍可在下一次游戏创建或重载时读取值。`install(app, engine, context)` 的第三个参数是同一上下文，旧的两参数入口仍可工作，便于现有本地 Mod 逐步迁移。
+
 `type` 为 `game` 或 `extension`，id 与目录名一致。版本范围由 `packaging` 按 Python 版本规范解析；该依赖用于可靠处理组合范围，随项目 requirements 更新。入口提供 `API_VERSION = 1`；加载器从清单注入 `VERSION` 与 `CLIENT`，入口不需要重复维护版本。
 
 `dependencies` 决定前置关系，`after` 补充已启用模块的加载顺序。`overrides` 声明独占资源，例如 `engine:advance_phase`、`ui:table`。依赖需一并启用，不能靠加载顺序掩盖重复覆盖。入口可用 `from .rules import ...`；所有影响规则的辅助源文件列入 `sources`，参与校验并在重载时更新。
@@ -57,11 +61,11 @@ games/某模块/
 
 | 接口 | 职责 |
 |---|---|
-| `create(seat_ids, options) -> dict` | 创建可 JSON 序列化的完整状态 |
+| `create(seat_ids, options) -> dict` | 创建可 JSON 序列化的完整状态；宿主在 `options.mod_settings` 提供该 Mod 当前设置 |
 | `observe(state, seat_id) -> dict` | 返回该席位可见状态，不修改输入 |
 | `requests(state) -> list[dict]` | 指定应行动的席位，支持同时行动 |
 | `step(state, seat_id, data) -> list[dict]` | 验证并结算，非法行动抛出 ValueError |
-| `install(app, engine)`（可选） | 注册路由、中间件及引擎实例行为 |
+| `install(app, engine, context)`（可选） | 注册路由、中间件及引擎实例行为；context 提供 Mod 设置 |
 
 `phase`、`turn`、`finished` 同步 Arena 阶段、回合和终局；其余状态由 Mod 定义。私密信息仅保存在完整状态，`observe` 使用字段白名单。请求支持 `target_seat`、`prompt`、`key`、行动类型、选项、时限和结果范围；稳定的阶段 key 可用于多人同时决策。
 
@@ -74,6 +78,8 @@ games/某模块/
 游戏 `view.js` 导出 `mount(container, context)`，返回 `update(payload)` 和可选的 `destroy()`。context 提供 `adminRequest` 与 `showNotice`；payload 含 `state`、`status`、`perspective`（null 为全知）与 `seats`。未提供组件时展示 JSON 状态。
 
 扩展的前端同样导出 `mount`，挂载到控制台扩展区域；context 额外提供 `root`，update 接收当前观察视角的快照。样式采用本模块类名前缀，并使用宿主 `--bg-surface`、`--text-main` 等语义变量适配主题。启停时刷新整个界面，让前端依赖和监听器随页面重新装载。
+
+宿主目前保持无构建步骤的原生 ES Module，原因是 Mod UI 可动态加载、游戏目录被本地忽略且不要求 Node 工具链。若未来需要组件化编辑器，优先引入 Lit 或 Preact 作为宿主/Mod 组件层，不把 React/Next 运行时塞进本机静态控制台。当前已在事件进入、笔记更新、设置抽屉和 Mod 重载后刷新加入短动效，并尊重减少动态效果设置；牌桌强调色由 Mod 设置传入。
 
 游戏组件可额外导出 `describeEvent(event, parsed) -> {title, text} | null`，把结构化行动翻译为本游戏的可读摘要。原始记录保留在详情和存档中。实时及回放共用事件类型、范围、席位与关键词过滤；“对局动态”默认显示结果与消息，笔记独立展示，“全部事件”包含指令与原始提交。
 

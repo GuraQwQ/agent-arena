@@ -130,7 +130,8 @@ function renderHostStage(data) {
 }
 
 function gamePayload(data) {
-  return { state: data.game?.state, status: data.game?.status, perspective: perspectiveSeat, seats: data.seats };
+  return { state: data.game?.state, status: data.game?.status, perspective: perspectiveSeat, seats: data.seats,
+    mod_settings: data.mod_settings?.[data.game?.name] || {} };
 }
 
 async function loadGameView(game, key) {

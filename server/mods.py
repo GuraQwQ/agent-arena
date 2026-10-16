@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
+from mod_settings import ModSettingsError, defaults_for, normalize_schema, validate_values
 
 
 def mod_file(root, mod_id, relative):
@@ -49,6 +50,7 @@ def read_manifest(root, mod_id):
         SpecifierSet(version)
     if not isinstance(data["frontend"], dict) or any(key not in {"module", "stylesheet"} or not isinstance(value, str) for key, value in data["frontend"].items()):
         raise ValueError("frontend 仅包含 module 和 stylesheet 文件路径")
+    data["settings"] = normalize_schema(data.get("settings", {}))
     digest = hashlib.sha256()
     rules = {key: data[key] for key in ("id", "version", "type", "entry", "dependencies", "conflicts", "overrides", "sources")}
     digest.update(json.dumps(rules, sort_keys=True, ensure_ascii=False).encode("utf-8"))
@@ -110,6 +112,20 @@ class ModConflict(ValueError):
     def __init__(self, issues):
         self.issues = issues
         super().__init__("；".join(issue["message"] for issue in issues))
+
+
+class ModContext:
+    """Mod 专属运行上下文，隔离设置命名空间并保留扩展点。"""
+
+    def __init__(self, manager, mod_id, app, engine, settings):
+        self.manager = manager
+        self.mod_id = mod_id
+        self.app = app
+        self.engine = engine
+        self.settings = settings
+
+    def get(self, key, default=None):
+        return self.settings.get(key, default)
 
 
 class ModManager:
@@ -191,8 +207,39 @@ class ModManager:
 
     def status(self):
         catalog = self.catalog()
+        settings, setting_issues = self.settings_status(catalog)
         return {"mods": list(catalog.values()), "enabled": self.enabled, "order": self.enabled,
-                "generation": self.generation, "issues": self.issues, "profile": self.engine.mod_profile, "loaded": self.loaded}
+                "generation": self.generation, "issues": self.issues + setting_issues, "profile": self.engine.mod_profile,
+                "loaded": self.loaded, "settings": settings}
+
+    def settings_status(self, catalog=None):
+        catalog = catalog or self.catalog()
+        result = []
+        issues = []
+        for mod_id, metadata in catalog.items():
+            schema = metadata.get("settings", {})
+            if metadata.get("error") or not schema:
+                continue
+            stored = self.engine.mod_settings.get(mod_id, {})
+            try:
+                values = validate_values(schema, stored)
+            except ModSettingsError as exc:
+                values = stored
+                issues.append({"code": "settings", "severity": "error", "mods": [mod_id], "message": f"{mod_id} 的已保存设置无效：{exc}"})
+            result.append({"id": mod_id, "name": metadata["name"], "version": metadata["version"],
+                           "enabled": mod_id in self.enabled, "schema": schema, "values": values,
+                           "defaults": defaults_for(schema)})
+        return result, issues
+
+    def update_settings(self, mod_id, values):
+        metadata = self.catalog().get(mod_id)
+        if not metadata or metadata.get("error"):
+            raise ModSettingsError(f"Mod {mod_id} 不存在或清单无效")
+        normalized = validate_values(metadata.get("settings", {}), values)
+        self.engine.update_mod_settings(mod_id, normalized)
+        if mod_id in self.enabled:
+            return self.apply(self.enabled)
+        return self.status()
 
     def _new_app(self):
         candidate = FastAPI(title=self.core_app.title, exception_handlers=self.core_app.exception_handlers,
@@ -216,6 +263,7 @@ class ModManager:
         owners = {}
         changes = {}
         patched_by = {}
+        pending_settings = dict(room.mod_settings)
         candidate = self._new_app()
         for route in candidate.routes:
             owners[id(route)] = "Arena 核心"
@@ -230,12 +278,18 @@ class ModManager:
                 mod = plan["catalog"][mod_id]
                 module = load_entry(self.root, mod)
                 modules[mod_id] = module
+                settings = validate_values(mod.get("settings", {}), room.mod_settings.get(mod_id, {}))
+                pending_settings[mod_id] = settings
+                context = ModContext(self, mod_id, candidate, room, settings)
                 hook = getattr(module, "install", None)
                 if hook:
                     if inspect.iscoroutinefunction(hook):
                         raise ValueError("install 应同步注册路由与引擎行为")
                     old_attributes = dict(vars(room))
-                    hook(candidate, room)
+                    if len(inspect.signature(hook).parameters) >= 3:
+                        hook(candidate, room, context)
+                    else:
+                        hook(candidate, room)
                     for key in set(old_attributes) | set(vars(room)):
                         if key not in old_attributes or key not in vars(room) or vars(room)[key] is not old_attributes[key]:
                             if key in patched_by:
@@ -243,6 +297,9 @@ class ModManager:
                             patched_by[key] = mod_id
                     if candidate.router.on_startup or candidate.router.on_shutdown:
                         raise ValueError("可重载 Mod 应在 install 中同步注册接口；后台任务需提供可重载的独立服务")
+                configure = getattr(module, "configure", None)
+                if configure:
+                    configure(settings, context)
                 for route in candidate.routes:
                     owners.setdefault(id(route), mod_id)
             routes = [route for route in candidate.routes if getattr(route, "methods", None)]
@@ -263,6 +320,7 @@ class ModManager:
                 if key not in base_attributes or key not in vars(room) or vars(room)[key] is not base_attributes[key]:
                     changes[key] = (key in base_attributes, base_attributes.get(key))
             room.mod_profile = [{key: plan["catalog"][mod_id][key] for key in ("id", "name", "version", "type", "rules_hash")} for mod_id in plan["order"]]
+            room.mod_settings = pending_settings
             if restore_snapshot is not None:
                 room.restore_archive(restore_snapshot, archive_current=False, mod_profile=room.mod_profile)
             else:

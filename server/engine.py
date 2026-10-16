@@ -73,6 +73,7 @@ class ArenaEngine:
         self.workspace_paths = {}
         self.memory_status = {}
         self.mod_profile = []
+        self.mod_settings = {}
         self._reset_generation = 0
         
         # 座次映射: seat_id -> Seat
@@ -124,7 +125,7 @@ class ArenaEngine:
             round_num=self.round_num, seq_counter=self._seq_counter, seats=self.seats,
             events=self.events, active_actions=self.active_actions,
             last_seen_seqs=self.last_seen_seqs, settings=self.settings, receipts=self.receipts,
-            scenario_description=self.scenario_description, flow=self.flow, game=self.game, workspace_paths=self.workspace_paths, mod_profile=self.mod_profile
+            scenario_description=self.scenario_description, flow=self.flow, game=self.game, workspace_paths=self.workspace_paths, mod_profile=self.mod_profile, mod_settings=self.mod_settings
         )
 
     def _apply_snapshot(self, snapshot: RoomSnapshot):
@@ -144,12 +145,17 @@ class ArenaEngine:
         self.game = snapshot.game
         self.workspace_paths = snapshot.workspace_paths
         self.mod_profile = snapshot.mod_profile
+        self.mod_settings = snapshot.mod_settings
 
     @mutating
     def register_workspace(self, seat_id, directory):
         if seat_id not in self.seats:
             raise ValueError("席位不存在")
         self.workspace_paths[seat_id] = str(Path(directory).expanduser().resolve())
+
+    @mutating
+    def update_mod_settings(self, mod_id, values):
+        self.mod_settings[mod_id] = values
 
     @mutating
     def restore_archive(self, raw, archive_current=True, mod_profile=None):
@@ -850,6 +856,8 @@ class ArenaEngine:
         self.flow = FlowState()
         self.game = None
         self.workspace_paths = {}
+        self.mod_profile = []
+        self.mod_settings = {}
         self.memory_status = {}
         self.phase = "准备中"
         self.scenario_description = ""
@@ -879,6 +887,7 @@ class ArenaEngine:
             "memories": memory_snapshots(self.events),
             "memory_status": self.memory_status,
             "mod_profile": self.mod_profile,
+            "mod_settings": self.mod_settings,
             "seats": {
                 sid: {**s.model_dump(exclude={"token"}),
                       "connection_status": "LISTENING" if sid in self._wait_events else

@@ -36,7 +36,9 @@ class GameDriver:
         if len(set(seat_ids)) != len(seat_ids) or any(sid not in self.room.seats for sid in seat_ids):
             raise ValueError("游戏参与席位必须存在且不能重复")
         module = load_mod(name)
-        state = module.create(seat_ids, options)
+        game_options = dict(options)
+        game_options.setdefault("mod_settings", dict(self.room.mod_settings.get(name, {})))
+        state = module.create(seat_ids, game_options)
         self.room.game = {"id": uuid4().hex, "name": name, "version": module.VERSION,
                           "status": "RUNNING", "state": state}
         self.room.record_event("GAME_START", f"【游戏开始】{name}", f"参与席位：{seat_ids}")

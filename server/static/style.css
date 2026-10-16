@@ -193,6 +193,14 @@ code,pre { font-family: var(--font-mono); }
 .mod-card header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .mod-card h4 { font-size: 13px; margin: 0; }
 .mod-card p,.mod-card details { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+.mod-settings { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.mod-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 600; margin-bottom: 10px; }
+.mod-setting-fields { display: grid; gap: 10px; }
+.mod-setting-field { display: grid; gap: 5px; color: var(--text-muted); font-size: 11px; }
+.mod-setting-field input,.mod-setting-field select,.mod-setting-field textarea { min-height: 32px; font-size: 12px; }
+.mod-setting-field input[type='color'] { width: 52px; padding: 3px; }
+.mod-setting-toggle { display: flex; gap: 8px; align-items: center; color: var(--text-main); font-size: 12px; }
+.mod-setting-help { margin: 0 !important; font-size: 11px !important; line-height: 1.5; }
 .mod-issue { padding: 12px; margin: 10px 0; background: var(--note-removed); color: var(--danger); border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
 .mod-issue.warning { background: var(--bg-card); color: var(--warning); }
 .mod-issue strong { display: block; margin-bottom: 5px; }
@@ -201,3 +209,12 @@ code,pre { font-family: var(--font-mono); }
 @media (max-width: 1050px) { .dashboard-grid { grid-template-columns: 180px minmax(0,1fr); } .memory-rail { grid-column: 1/-1; max-height: 350px; } .memory-cards { grid-template-columns: repeat(3,minmax(0,1fr)); } body { height: auto; min-height: 100dvh; overflow: auto; } .timeline-panel { height: 78dvh; min-height: 520px; } .seat-panel { max-height: 78dvh; } .navbar { flex-wrap: wrap; } .dashboard-grid.memories-hidden { grid-template-columns: 180px minmax(0,1fr); } }
 @media (max-width: 700px) { .navbar { padding: 14px 16px; gap: 14px; } .nav-brand h1 { font-size: 16px; } .nav-status { flex-wrap: wrap; width: 100%; gap: 10px; } .perspective-label { margin-right: auto; } .conn-pill { display: none; } .phase-tag { font-size: 12px; } .dashboard-grid,.dashboard-grid.memories-hidden { display: flex; flex-direction: column; gap: 16px; padding: 12px; } .timeline-panel { order: -2; height: 78dvh; min-height: 520px; } .memory-rail { order: -1; max-height: none; } .memory-cards { grid-template-columns: 1fr; } .seat-panel { max-height: none; } .panel-header { padding: 18px; } .panel-header h2 { font-size: 18px; } .feed-status { max-width: 85px; font-size: 12px; } .timeline-tabs { padding-inline: 18px; gap: 24px; } .feed-toolbar { padding: 12px 16px; } .timeline-container { padding-inline: 16px; } .feed-filter-row select { max-width: 125px; } .event-count { margin-left: 0; } .autoscroll-label { margin-left: auto; } .event-header { flex-wrap: wrap; gap: 2px; } .event-header time { order: 1; } .event-round { padding-left: 36px; } .event-item { gap: 9px; } .event-avatar { width: 27px; height: 27px; } .form-row { flex-wrap: wrap; } .form-row .flex-1 { flex-basis: 110px; } .control-panel { inset: 10px 10px 10px auto; width: calc(100vw - 20px); max-height: calc(100dvh - 20px); } .host-login { margin-top: 24px; padding: 22px; } .arena-stage,.replay-controls { padding: 16px; } }
 @media (prefers-reduced-motion: no-preference) { body:not(.reduce-motion) .btn { transition: background-color 150ms ease-out, color 150ms ease-out; } }
+@media (prefers-reduced-motion: no-preference) {
+  body:not(.reduce-motion) .event-item { animation: event-enter 180ms ease-out both; }
+  body:not(.reduce-motion) .memory-fresh { animation: memory-pulse 1.8s ease-out 1; }
+  body:not(.reduce-motion) .tab-btn.active { transition: color 180ms ease-out, border-color 180ms ease-out; }
+  body:not(.reduce-motion) .control-panel:popover-open { animation: panel-enter 180ms ease-out both; }
+}
+@keyframes event-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes memory-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 35%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@keyframes panel-enter { from { opacity: 0; transform: translateY(-6px) scale(.99); } to { opacity: 1; transform: translateY(0) scale(1); } }

@@ -194,6 +194,7 @@ class RoomSnapshot(BaseModel):
     game: Optional[dict] = None
     workspace_paths: Dict[int, str] = Field(default_factory=dict)
     mod_profile: List[dict] = Field(default_factory=list)
+    mod_settings: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class EventAcknowledgement(BaseModel):

@@ -27,6 +27,7 @@ from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, 
 from cli_mount import mount_cli, unmount_cli
 from gameplay import GAMES_ROOT, GameDriver, load_mod
 from mods import ModConflict, ModManager, ModRuntime, mod_file, read_manifest, snapshot_mods
+from mod_settings import ModSettingsError
 from host_access import HostAccess, JoinClosed
 from memory_observer import MemoryObserver
 
@@ -588,6 +589,10 @@ class ModSelection(BaseModel):
     enabled: List[str] = Field(default_factory=list, max_length=100)
 
 
+class ModSettingsUpdate(BaseModel):
+    values: Dict[str, Any]
+
+
 @app.get("/api/admin/mods")
 async def list_mods(request: Request):
     require_admin(request)
@@ -605,6 +610,22 @@ async def validate_mods(body: ModSelection, request: Request):
 async def apply_mods(body: ModSelection, request: Request):
     require_admin(request)
     return mod_manager.apply(body.enabled)
+
+
+@app.get("/api/admin/mod-settings")
+async def list_mod_settings(request: Request):
+    require_admin(request)
+    settings, issues = mod_manager.settings_status()
+    return {"settings": settings, "issues": issues, "generation": mod_manager.generation}
+
+
+@app.put("/api/admin/mods/{mod_id}/settings")
+async def update_mod_settings(mod_id: str, body: ModSettingsUpdate, request: Request):
+    require_admin(request)
+    try:
+        return mod_manager.update_settings(mod_id, body.values)
+    except ModSettingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.get("/api/admin/mods/frontend")
@@ -773,7 +794,7 @@ if STATIC_DIR.exists():
     def index():
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
-            files = ("style.css", "event_feed.js", "host_shell.js", "app.js", "mod_panel.js")
+            files = ("style.css", "event_feed.js", "host_shell.js", "app.js", "mod_settings.js", "mod_panel.js")
             version = hashlib.sha256(b"".join((STATIC_DIR / filename).read_bytes() for filename in files)).hexdigest()[:16]
             return HTMLResponse(index_file.read_text(encoding="utf-8").replace("__ASSET_VERSION__", version), headers={"Cache-Control": "no-store"})
         return "<h1>Agent Arena 服务已启动</h1>"
