@@ -11,10 +11,12 @@ venv/
 ENV/
 env/
 .env
+/host-login.json
 
 # 运行时沙盒与数据快照 (避免提交个人日志与测试文件)
 workspace/
 data/
+games/
 test_seat/
 
 # 操作系统临时文件

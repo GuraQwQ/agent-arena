@@ -18,12 +18,12 @@ let replayPosition = 0;
 let replayTimer = null;
 let replayLoadSerial = 0;
 let snapshotReceivedAt = Date.now();
-const ADMIN_TOKEN_KEY = "arena_admin_token";
 const ACTION_NAMES = { ACT: "通用行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "选择", NUMBER: "数值" };
 const SCOPE_NAMES = { PUBLIC: "全员公开", PRIVATE: "指定席位", GROUP: "指定阵营", HOST_ONLY: "仅主持人" };
 
 // 初始化连接
 window.addEventListener("DOMContentLoaded", async () => {
+  initDisplaySettings();
   setInterval(updateSeatIndicators, 1000);
   document.addEventListener("input", (event) => {
     if (event.target.matches("input, textarea, select")) event.target.dataset.dirty = "true";
@@ -32,8 +32,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   try {
     if (await ensureAdminSession()) {
       connectSSE();
+      if (sessionStorage.getItem("arena_reopen_mods")) {
+        sessionStorage.removeItem("arena_reopen_mods");
+        await openModSettings();
+      }
     } else {
-      document.getElementById("conn-pill").textContent = "等待主持人令牌";
+      document.getElementById("conn-pill").textContent = "等待加入主持人";
     }
   } catch (error) {
     showNotice(error.message, true);
@@ -45,33 +49,6 @@ window.addEventListener("unhandledrejection", (event) => {
   event.preventDefault();
 });
 
-async function ensureAdminSession() {
-  let token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
-  if (!token) {
-    token = window.prompt("请输入服务端启动日志中的主持人管理令牌:");
-  }
-  if (!token) return false;
-
-  const res = await fetch("/api/admin/session", {
-    method: "POST",
-    headers: { "X-Admin-Token": token }
-  });
-  if (!res.ok) {
-    sessionStorage.removeItem(ADMIN_TOKEN_KEY);
-    alert("主持人管理令牌无效");
-    return false;
-  }
-  sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
-  return true;
-}
-
-function adminFetch(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
-  if (token) headers.set("X-Admin-Token", token);
-  return fetch(url, { ...options, headers });
-}
-
 async function adminRequest(url, body, method = "POST") {
   const response = await adminFetch(url, {
     method,
@@ -81,7 +58,9 @@ async function adminRequest(url, body, method = "POST") {
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = data?.detail;
-    throw new Error(typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : `请求失败 (${response.status})`);
+    const error = new Error(typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : `请求失败 (${response.status})`);
+    error.issues = data?.issues;
+    throw error;
   }
   return data;
 }
@@ -113,7 +92,7 @@ function connectSSE() {
   eventSource = new EventSource("/api/admin/stream");
 
   eventSource.onopen = () => {
-    pill.innerHTML = '<span class="dot"></span> SSE 实时在线';
+    pill.innerHTML = '<span class="dot"></span> 实时连接';
     pill.style.color = "var(--success)";
   };
 
@@ -121,18 +100,28 @@ function connectSSE() {
     try {
       const payload = JSON.parse(e.data);
       if (payload.type === "SNAPSHOT") {
-        renderSnapshot(payload.data);
-      } else if (payload.type === "EVENT") {
-        appendEvent(payload.data);
+        receiveHostSnapshot(payload.data).catch(error => showNotice(error.message, true));
+      } else if (payload.type === "HOST_ACCESS") {
+        renderHostAccess(payload.data);
+      } else if (payload.type === "MOD_RELOAD") {
+        if (document.getElementById("controls-panel").matches(":popover-open") && document.getElementById("control-tab-mods").classList.contains("active")) sessionStorage.setItem("arena_reopen_mods", "1");
+        location.reload();
       }
     } catch (err) {
       console.error("解析 SSE 数据失败:", err, e.data);
     }
   };
 
-  eventSource.onerror = () => {
+  eventSource.onerror = async () => {
     pill.innerHTML = '<span class="dot" style="background-color: var(--danger)"></span> 连接重试中...';
     pill.style.color = "var(--danger)";
+    try {
+      const access = await (await fetch("/api/host/access")).json();
+      if (!access.authenticated) {
+        eventSource.close();
+        await ensureAdminSession();
+      }
+    } catch (_) { /* 等待服务恢复后由 SSE 自动重连。 */ }
   };
 }
 
@@ -141,6 +130,7 @@ function renderSnapshot(data) {
   latestSnapshot = data;
   snapshotReceivedAt = Date.now();
   currentPhase = data.phase || "准备中";
+  document.getElementById("room-title").textContent = data.room_title || "竞技场";
   document.getElementById("current-phase").textContent = currentPhase;
   syncInput("input-round", data.round_num || 1);
   syncInput("scenario-title", data.room_title || "竞技场剧本");
@@ -154,14 +144,11 @@ function renderSnapshot(data) {
   updateSeatSelects(currentSeats);
   renderFlow(data.flow || {});
 
-  // 渲染全量事件
-  const container = document.getElementById("timeline-container");
-  container.innerHTML = "";
-  if (data.events && data.events.length > 0) {
-    data.events.forEach(event => appendEvent(event));
-  } else {
-    container.innerHTML = '<div class="empty-state">暂无事件记录，请推进阶段或发出指示。</div>';
-  }
+  updateEventSeatOptions();
+  renderEventFeed();
+  renderHostStage(data);
+  updateModViews(data);
+  if (timelineView !== "replay") renderMemories(data.memories || {}, data.seats || {}, data.memory_status || {});
 }
 
 // 渲染座次列表
@@ -169,6 +156,7 @@ function renderSeatsList(seats) {
   const listEl = document.getElementById("seats-list");
   const countEl = document.getElementById("seat-count");
   const sids = Object.keys(seats);
+  const expanded = new Set([...listEl.querySelectorAll("details[open]")].map(node => node.dataset.seatDetails));
   countEl.textContent = sids.length;
 
   if (sids.length === 0) {
@@ -190,26 +178,18 @@ function renderSeatsList(seats) {
     }
 
     return `
-      <div class="seat-card">
+      <div class="seat-card ${Number(sid) === perspectiveSeat ? "seat-observed" : ""}">
         <div class="seat-top">
-          <span class="seat-title">${s.seat_id}号位 · ${escapeHtml(s.name)}</span>
+          <span class="seat-number">${s.seat_id}</span><span class="seat-title">${escapeHtml(s.name)}</span>
           <span class="badge ${badgeClass}">${statusText}</span>
         </div>
         <div class="seat-meta">
-          <div>身份: <strong>${escapeHtml(s.role)}</strong></div>
-          <div>阵营: <strong>${escapeHtml(s.group_id || "未分组")}</strong></div>
-          <div>模型: <code>${escapeHtml(s.model)}</code></div>
-          <div>环境: <span>${escapeHtml(s.harness)}</span></div>
+          <div>${escapeHtml(s.role)}</div>
+          <div>${escapeHtml(s.model)}</div>
           <div class="connection-status" data-seat-connection="${s.seat_id}"></div>
-          <div data-seat-seen="${s.seat_id}"></div>
         </div>
         ${action ? `<div class="pending-action"><strong>${escapeHtml(ACTION_NAMES[action.action_type] || action.action_type)}</strong> · ${escapeHtml(SCOPE_NAMES[action.result_scope] || action.result_scope || "全员公开")}<div>截止 ${new Date(action.deadline * 1000).toLocaleTimeString()}</div><div class="action-countdown" data-action-countdown="${s.seat_id}"></div><button class="btn btn-secondary btn-sm w-100" onclick="cancelAction(${s.seat_id})">取消待办行动</button></div>` : ""}
-        <div class="form-row seat-actions"><button class="btn btn-secondary btn-sm flex-1" onclick="editSeat(${s.seat_id})">编辑</button><button class="btn btn-danger btn-sm" onclick="removeSeat(${s.seat_id})">移除</button></div>
-        <div style="margin-top: 10px;">
-          <button class="btn btn-secondary btn-sm w-100" onclick="copyBootstrapCmd(${s.seat_id})">
-            📋 复制 Agent 启动指令
-          </button>
-        </div>
+        <details class="seat-details" data-seat-details="${sid}" ${expanded.has(sid) ? "open" : ""}><summary>连接与操作</summary><div class="seat-meta"><div>阵营 · ${escapeHtml(s.group_id || "未分组")}</div><div>环境 · ${escapeHtml(s.harness)}</div><div data-seat-seen="${s.seat_id}"></div></div><div class="form-row seat-actions"><button class="btn btn-secondary btn-sm flex-1" onclick="editSeat(${s.seat_id})">编辑</button><button class="btn btn-danger btn-sm" onclick="removeSeat(${s.seat_id})">移除</button></div><button class="btn btn-secondary btn-sm w-100" onclick="copyBootstrapCmd(${s.seat_id})">复制接入命令</button></details>
       </div>
     `;
   }).join("");
@@ -223,14 +203,14 @@ function updateSeatIndicators() {
     if (!seat) continue;
     const seconds = seat.seconds_since_seen === null || seat.seconds_since_seen === undefined ? null : seat.seconds_since_seen + elapsed;
     const status = seat.connection_status === "RECENT" && seconds > 75 ? "OFFLINE" : seat.connection_status || "NEVER";
-    const labels = { NEVER: "未接入", LISTENING: "正在监听服务端", RECENT: "最近有服务请求", OFFLINE: "超过 75 秒未活动" };
-    node.textContent = `连接：${labels[status] || status}`;
+    const labels = { NEVER: "尚未接入", LISTENING: "正在监听", RECENT: "最近在线", OFFLINE: "当前离线" };
+    node.textContent = labels[status] || status;
     node.className = `connection-status connection-${status.toLowerCase()}`;
   }
   for (const node of document.querySelectorAll("[data-seat-seen]")) {
     const seat = currentSeats[node.dataset.seatSeen];
     const seconds = seat?.seconds_since_seen;
-    node.textContent = seconds === null || seconds === undefined ? "最近请求：尚无记录" : `最近请求：${seconds + elapsed} 秒前`;
+    node.textContent = seconds === null || seconds === undefined ? "尚无连接记录" : `上次请求 · ${seconds + elapsed < 60 ? `${seconds + elapsed} 秒前` : `${Math.floor((seconds + elapsed) / 60)} 分钟前`}`;
   }
   for (const node of document.querySelectorAll("[data-action-countdown]")) {
     const action = latestSnapshot?.active_actions?.[node.dataset.actionCountdown];
@@ -258,7 +238,7 @@ function copyBootstrapCmd(seatId) {
 
 // 更新下拉框
 function updateSeatSelects(seats) {
-  for (const id of ["select-target-seat", "select-private-seat", "action-recipient", "flow-recipient"]) {
+  for (const id of ["select-target-seat", "select-private-seat", "action-recipient", "flow-recipient", "workspace-seat"]) {
     const select = document.getElementById(id);
     const selected = select.value;
     const options = [new Option("-- 选择座次 --", ""), ...Object.values(seats).map(seat => new Option(`${seat.seat_id}号位 (${seat.name} - ${seat.model || "待连接"})`, seat.seat_id))];
@@ -312,81 +292,27 @@ async function saveSettings() {
   }
 }
 
-// 渲染单个事件追加
-function appendEvent(ev, targetId = "timeline-container") {
-  const container = document.getElementById(targetId);
-  
-  // 移除空提示
-  const empty = container.querySelector(".empty-state");
-  if (empty) empty.remove();
-
-  let tagClass = "tag-public";
-  let scopeTag = '<span style="color: var(--success)">[全员公开]</span>';
-  
-  if (ev.scope === "PRIVATE") {
-    tagClass = "tag-private";
-    scopeTag = `<span style="color: var(--accent)">[私信: ${ev.to_seat}号位]</span>`;
-  } else if (ev.scope === "GROUP") {
-    tagClass = "tag-private";
-    scopeTag = `<span style="color: var(--accent)">[阵营: ${escapeHtml(ev.group_id)}]</span>`;
-  } else if (ev.scope === "HOST_ONLY") {
-    tagClass = "tag-private";
-    scopeTag = '<span style="color: var(--purple)">[仅主持人]</span>';
-  } else if (ev.event_type === "ACTION_REQUEST" || ev.event_type === "ACTION_SUBMIT") {
-    tagClass = "tag-action";
-    scopeTag = '<span style="color: var(--warning)">[行动事件]</span>';
-  } else if (ev.event_type === "SYSTEM") {
-    tagClass = "tag-system";
-    scopeTag = '<span style="color: var(--text-muted)">[系统]</span>';
-  }
-
-  const timeStr = new Date(ev.timestamp * 1000).toLocaleTimeString();
-
-  let secretHtml = "";
-  if (ev.secret_reason) {
-    secretHtml = `
-      <div class="secret-box">
-        <strong>战术意图 (仅主持人可见):</strong>
-        <div>${escapeHtml(ev.secret_reason)}</div>
-      </div>
-    `;
-  }
-
-  const itemEl = document.createElement("div");
-  itemEl.className = `event-item ${tagClass}`;
-  itemEl.innerHTML = `
-    <div class="event-header">
-      <div class="event-title">
-        ${scopeTag}
-        <span>${escapeHtml(ev.title)}</span>
-      </div>
-      <div class="event-time">#${ev.seq} ${timeStr}</div>
-    </div>
-    <div class="event-body">${escapeHtml(ev.content)}</div>
-    ${ev.data && (Object.hasOwn(ev.data, "choice") || Object.hasOwn(ev.data, "value")) ? `<div class="result-data">${Object.hasOwn(ev.data, "choice") ? `选择：${escapeHtml(ev.data.choice)}` : `数值：${escapeHtml(String(ev.data.value))}`}</div>` : ""}
-    ${secretHtml}
-  `;
-
-  container.appendChild(itemEl);
-
-  if (targetId === "replay-timeline" || document.getElementById("chk-auto-scroll").checked) {
-    container.scrollTop = container.scrollHeight;
-  }
-}
-
 async function switchTimelineView(view) {
+  timelineView = view;
   const replay = view === "replay";
-  for (const name of ["live", "replay"]) {
+  for (const name of ["game", "live", "replay"]) {
     document.getElementById(`view-${name}`).classList.toggle("active", name === view);
     document.getElementById(`view-${name}`).setAttribute("aria-pressed", String(name === view));
   }
-  document.getElementById("timeline-heading").textContent = replay ? "存档复盘" : "实时事件";
-  document.getElementById("timeline-filters").hidden = replay;
-  document.getElementById("timeline-container").hidden = replay;
+  document.getElementById("timeline-heading").textContent = replay ? "存档复盘" : view === "game" ? "游戏现场" : "实时事件";
+  document.getElementById("timeline-filters").hidden = view === "game";
+  document.getElementById("timeline-container").hidden = view !== "live";
+  document.getElementById("arena-stage").hidden = view !== "game";
   document.getElementById("replay-controls").hidden = !replay;
   document.getElementById("replay-timeline").hidden = !replay;
+  updateEventSeatOptions();
+  renderEventFeed(replay);
+  if (replay) renderReplayMemories();
   if (replay) await refreshArchives();
-  else pauseReplay();
+  else {
+    pauseReplay();
+    if (latestSnapshot) renderMemories(latestSnapshot.memories || {}, currentSeats, latestSnapshot.memory_status || {});
+  }
 }
 
 async function refreshArchives() {
@@ -426,18 +352,23 @@ function clearReplay(message) {
   empty.textContent = message;
   container.appendChild(empty);
   document.getElementById("replay-position-label").textContent = message;
+  renderReplayMemories();
 }
 
 async function loadReplayArchive() {
   const roomId = document.getElementById("replay-archive").value;
   const serial = ++replayLoadSerial;
   replayHost = null;
+  archiveModReport = null;
+  document.getElementById("archive-restore").disabled = true;
+  document.getElementById("archive-mod-status").textContent = "";
   clearReplay(roomId ? "正在加载对局存档…" : "选择存档开始复盘。");
   if (!roomId) return;
   try {
     const host = await adminRequest(`/api/admin/archives/${encodeURIComponent(roomId)}`, undefined, "GET");
     if (serial !== replayLoadSerial) return;
     replayHost = host;
+    inspectArchiveMods(roomId).catch(error => showNotice(error.message, true));
     const perspectives = document.getElementById("replay-perspective");
     perspectives.replaceChildren(new Option("主持人", ""), ...Object.values(host.seats || {}).map(seat => new Option(`${seat.seat_id} 号位 · ${seat.name}`, seat.seat_id)));
     perspectives.disabled = false;
@@ -484,8 +415,8 @@ function seekReplay(position) {
   replayPosition = Math.max(0, Math.min(events.length, Number(position) || 0));
   document.getElementById("replay-position").value = replayPosition;
   const container = document.getElementById("replay-timeline");
-  container.replaceChildren();
-  events.slice(0, replayPosition).forEach(event => appendEvent(event, "replay-timeline"));
+  updateEventSeatOptions();
+  renderEventFeed(true);
   const current = events[replayPosition - 1];
   if (current) {
     document.getElementById("replay-round").value = current.round_num;
@@ -495,6 +426,7 @@ function seekReplay(position) {
     document.getElementById("replay-position-label").textContent = events.length ? `事件 0/${events.length} · 对局开始` : "此视角没有可见事件。";
   }
   if (replayPosition >= events.length) pauseReplay();
+  renderReplayMemories();
 }
 
 function jumpReplayRound() {

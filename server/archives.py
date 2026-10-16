@@ -7,7 +7,8 @@ import tempfile
 import time
 from math import isfinite
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid5
+from mods import snapshot_mods
 
 
 class ArchiveStore:
@@ -42,12 +43,22 @@ class ArchiveStore:
                 not isinstance(recipients, list) or not all(isinstance(s, int) for s in recipients)
             ):
                 raise ValueError("事件接收席位格式无效")
+        profile = snapshot.get("mod_profile", [])
+        if not isinstance(profile, list) or any(not isinstance(mod, dict) or not isinstance(mod.get("id"), str) or not isinstance(mod.get("version"), str) for mod in profile):
+            raise ValueError("存档 Mod 清单格式无效")
         return snapshot
+
+    def backup(self, snapshot: dict) -> str:
+        backup = copy.deepcopy(snapshot)
+        backup["room_id"] = uuid5(UUID(snapshot["room_id"]), f"before-restore:{snapshot.get('seq_counter', len(snapshot['events']))}").hex
+        backup["room_title"] = snapshot.get("room_title", "对局") + " · 恢复前备份"
+        return self.save(backup)
 
     def save(self, snapshot: dict) -> str:
         self._validate(snapshot)
         path = self._path(snapshot.get("room_id"))
         saved = copy.deepcopy(snapshot)
+        saved["mod_profile"] = snapshot_mods(saved)
         saved.update(room_id=path.stem, archived_at=time.time())
         content = json.dumps(saved, ensure_ascii=False, indent=2, allow_nan=False)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -95,6 +106,7 @@ class ArchiveStore:
                     "round_num": snapshot.get("round_num", 1),
                     "event_count": len(snapshot["events"]),
                     "archived_at": snapshot.get("archived_at", 0),
+                    "mod_profile": snapshot_mods(snapshot),
                 })
             except (ValueError, OSError) as exc:
                 result.append({"room_id": path.stem, "title": path.stem, "error": str(exc)})
@@ -113,6 +125,7 @@ class ArchiveStore:
             key: {name: value for name, value in seat.items() if name not in {"token", "claim_token"}}
             for key, seat in seats.items() if seat_id is None or key == str(seat_id)
         }
+        exported["mod_profile"] = snapshot_mods(snapshot)
         exported["events"] = []
         for event in snapshot["events"]:
             scope = event.get("scope")

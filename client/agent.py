@@ -161,6 +161,7 @@ def cmd_join(args):
     res = api_request(cfg, "POST", "/api/player/join", body=payload)
     cfg["seat"] = res["seat_id"]
     cfg["token"] = res["token"]
+    cfg["room_id"] = res["room_id"]
     save_config(cfg)
 
     print("=" * 60)
@@ -359,6 +360,16 @@ def cmd_status(args):
     sys.exit(EXIT_OK)
 
 
+def cmd_game(args):
+    cfg = load_config()
+    if not cfg.get("seat") or not cfg.get("token") or not cfg.get("room_id"):
+        print("❌ 请先执行主持人提供的自举命令，获取本局房间和席位凭证")
+        sys.exit(EXIT_ERROR)
+    view = api_request(cfg, "GET", "/api/player/game", params={"seat_id": cfg["seat"], "room_id": cfg["room_id"]})
+    print(json.dumps(view, ensure_ascii=False, indent=2))
+    sys.exit(EXIT_OK)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Agent Arena 客户端")
     subparsers = parser.add_subparsers(dest="command")
@@ -395,6 +406,7 @@ def main():
 
     # status
     subparsers.add_parser("status", help="查看当前状态")
+    subparsers.add_parser("game", help="查看自己的游戏状态与手牌")
 
     args = parser.parse_args()
     if args.command == "join":
@@ -407,6 +419,8 @@ def main():
         cmd_log(args)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "game":
+        cmd_game(args)
     else:
         parser.print_help()
 

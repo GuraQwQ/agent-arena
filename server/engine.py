@@ -6,6 +6,7 @@
 import asyncio
 import json
 import math
+import os
 import threading
 import time
 import uuid
@@ -16,8 +17,10 @@ from typing import Any, Dict, List, Optional
 from models import ActionRequest, ArenaSettings, Event, FlowState, FlowStep, RoomSnapshot, Scenario, Seat, SeatDefinition, VisibilityScope
 from archives import ArchiveStore
 from storage import write_json
+from gameplay import GameDriver
+from memory_observer import memory_snapshots
 
-SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data"
+SNAPSHOT_DIR = Path(os.environ.get("ARENA_DATA_DIR") or Path(__file__).resolve().parent.parent / "data").expanduser().resolve()
 SNAPSHOT_FILE = SNAPSHOT_DIR / "room_state.json"
 
 
@@ -66,6 +69,10 @@ class ArenaEngine:
         self._changing = False
         self.receipts = {}
         self.flow = FlowState()
+        self.game = None
+        self.workspace_paths = {}
+        self.memory_status = {}
+        self.mod_profile = []
         self._reset_generation = 0
         
         # 座次映射: seat_id -> Seat
@@ -103,7 +110,7 @@ class ArenaEngine:
                 role=f"探索者_{i}",
                 model="未接入",
                 harness="未接入",
-                token=f"token-{i}-{uuid.uuid4().hex[:6]}",
+                token=uuid.uuid4().hex,
                 claim_token=uuid.uuid4().hex,
                 status="IDLE",
                 init_prompt=f"你是本局沙盒推演的 {i}号智能体。你的目标是仔细观察公开局势与私信情报，在主持人点名时做出最佳决策。",
@@ -117,7 +124,7 @@ class ArenaEngine:
             round_num=self.round_num, seq_counter=self._seq_counter, seats=self.seats,
             events=self.events, active_actions=self.active_actions,
             last_seen_seqs=self.last_seen_seqs, settings=self.settings, receipts=self.receipts,
-            scenario_description=self.scenario_description, flow=self.flow
+            scenario_description=self.scenario_description, flow=self.flow, game=self.game, workspace_paths=self.workspace_paths, mod_profile=self.mod_profile
         )
 
     def _apply_snapshot(self, snapshot: RoomSnapshot):
@@ -134,6 +141,52 @@ class ArenaEngine:
         self.settings = snapshot.settings
         self.receipts = snapshot.receipts
         self.flow = snapshot.flow
+        self.game = snapshot.game
+        self.workspace_paths = snapshot.workspace_paths
+        self.mod_profile = snapshot.mod_profile
+
+    @mutating
+    def register_workspace(self, seat_id, directory):
+        if seat_id not in self.seats:
+            raise ValueError("席位不存在")
+        self.workspace_paths[seat_id] = str(Path(directory).expanduser().resolve())
+
+    @mutating
+    def restore_archive(self, raw, archive_current=True, mod_profile=None):
+        snapshot = RoomSnapshot.model_validate(raw)
+        if snapshot.schema_version > 2:
+            raise ValueError("存档版本高于当前服务")
+        if archive_current:
+            ArchiveStore(SNAPSHOT_FILE.parent / "archives").backup(self.snapshot().model_dump(mode="json"))
+        self._apply_snapshot(snapshot)
+        self.room_id = uuid.uuid4().hex
+        if mod_profile is not None:
+            self.mod_profile = mod_profile
+        self._reset_generation += 1
+        if self.game:
+            if self.game["status"] == "RUNNING":
+                self.game["status"] = "PAUSED"
+            self.active_actions.clear()
+        elif self.flow.status in {"RUNNING", "AWAITING_HOST"}:
+            self.control_flow("pause")
+        for seat in self.seats.values():
+            seat.token = uuid.uuid4().hex
+            seat.claim_token = uuid.uuid4().hex
+            seat.status = "IDLE"
+        self.last_seen_seqs = {sid: 0 for sid in self.seats}
+        self.memory_status = {}
+        self.record_event("SYSTEM", "恢复存档", "已从存档恢复为新对局；运行中的游戏已暂停，玩家需重新接入", scope=VisibilityScope.HOST_ONLY)
+
+    def game_active(self):
+        return bool(self.game and self.game["status"] in {"RUNNING", "PAUSED"})
+
+    @mutating
+    def start_game(self, name, seat_ids, options=None):
+        GameDriver(self).start(name, seat_ids, options or {})
+
+    @mutating
+    def control_game(self, operation):
+        GameDriver(self).control(operation)
 
     def save_snapshot(self):
         """原子落盘保存当前对局全量快照"""
@@ -246,6 +299,8 @@ class ArenaEngine:
 
     @mutating
     def update_seat(self, definition: SeatDefinition):
+        if self.game_active():
+            raise ValueError("请先停止游戏，再调整席位")
         if self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
             raise ValueError("请先停止流程，再调整席位配置")
         seat = self.seats.get(definition.seat_id)
@@ -261,6 +316,8 @@ class ArenaEngine:
 
     @mutating
     def remove_seat(self, seat_id: int):
+        if self.game_active():
+            raise ValueError("请先停止游戏，再调整席位")
         if self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
             raise ValueError("请先停止流程，再调整席位配置")
         if seat_id not in self.seats:
@@ -271,6 +328,7 @@ class ArenaEngine:
             raise ValueError("请先完成或取消该席位的待办行动")
         self.seats.pop(seat_id)
         self.last_seen_seqs.pop(seat_id, None)
+        self.workspace_paths.pop(seat_id, None)
 
     @mutating
     def load_scenario(self, scenario: Scenario):
@@ -299,6 +357,8 @@ class ArenaEngine:
 
     @mutating
     def advance_phase(self, phase: Optional[str], round_num: Optional[int]):
+        if self.game_active():
+            raise ValueError("游戏阶段由规则模块管理，请先停止游戏")
         if self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
             raise ValueError("请先停止自动流程，再手动变更阶段")
         self.phase = phase or self.phase
@@ -404,6 +464,8 @@ class ArenaEngine:
 
     @mutating
     def start_flow(self, steps: List[FlowStep]):
+        if self.game_active():
+            raise ValueError("请先停止游戏，再运行固定流程")
         if self.active_actions or self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
             raise ValueError("请先完成或停止现有行动流程")
         if not steps:
@@ -522,10 +584,12 @@ class ArenaEngine:
     def dispatch_action(self, target_seat: int, action_type: str, prompt: str, options: Optional[List[str]] = None, timeout: int = 60,
                         result_scope: VisibilityScope = VisibilityScope.PUBLIC, result_target_seat: Optional[int] = None,
                         result_group_id: Optional[str] = None, min_value: Optional[float] = None, max_value: Optional[float] = None,
-                        flow_index: Optional[int] = None) -> ActionRequest:
+                        flow_index: Optional[int] = None, game_id: Optional[str] = None, game_key: Optional[str] = None) -> ActionRequest:
         """主持人向指定 Agent 下达行动命令 (点名)"""
         self._validate_action(target_seat, action_type, options, timeout, result_scope,
                               result_target_seat, result_group_id, min_value, max_value)
+        if self.game_active() and game_id != self.game["id"]:
+            raise ValueError("游戏行动由规则模块管理")
         if flow_index is None and self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
             raise ValueError("自动流程运行期间请使用流程控制")
         pending = self.active_actions.get(target_seat)
@@ -545,7 +609,7 @@ class ArenaEngine:
             result_scope=result_scope, result_target_seat=result_target_seat,
             result_group_id=result_group_id,
             result_recipients=self._recipients(result_scope, target_seat, result_target_seat, result_group_id),
-            min_value=min_value, max_value=max_value, flow_index=flow_index
+            min_value=min_value, max_value=max_value, flow_index=flow_index, game_id=game_id, game_key=game_key
         )
         self.active_actions[target_seat] = req
         
@@ -581,6 +645,8 @@ class ArenaEngine:
         if pending.flow_index is not None and seat_id in self.flow.pending_seats:
             self.flow.pending_seats.remove(seat_id)
             self._progress_flow()
+        if pending.game_id is not None and self.game and self.game["status"] == "RUNNING":
+            GameDriver(self).control("pause")
 
     @mutating
     def submit_action(self, seat_id: int, token: str, action_type: str, content: str, request_id: str, secret_reason: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> Event:
@@ -605,7 +671,7 @@ class ArenaEngine:
             if pending.deadline <= time.time() and not (pending.flow_index is not None and self.flow.status == "PAUSED"):
                 self.active_actions.pop(seat_id, None)
                 raise TimeoutError("行动已超过截止时间")
-        elif not self.settings.allow_free_actions:
+        elif self.game_active() or not self.settings.allow_free_actions:
             raise PermissionError("当前没有待办行动")
 
         if pending and pending.action_type in {"VOTE", "CHOOSE"}:
@@ -641,6 +707,8 @@ class ArenaEngine:
         if pending and not sealed:
             event.recipient_seats = pending.result_recipients
         self.receipts[receipt_key] = {"event_seq": event.seq, "payload": payload}
+        if pending and pending.game_id is not None:
+            GameDriver(self).submit(seat_id, data or {})
         if pending and pending.flow_index is not None:
             if sealed:
                 self.flow.sealed_results.append({"event_seq": event.seq, "scope": pending.result_scope,
@@ -780,6 +848,9 @@ class ArenaEngine:
         self.room_id = uuid.uuid4().hex
         self.receipts = {}
         self.flow = FlowState()
+        self.game = None
+        self.workspace_paths = {}
+        self.memory_status = {}
         self.phase = "准备中"
         self.scenario_description = ""
         self.round_num = 1
@@ -803,6 +874,11 @@ class ArenaEngine:
             "round_num": self.round_num,
             "settings": self.settings.model_dump(),
             "flow": self.flow.model_dump(),
+            "game": self.game,
+            "workspace_paths": self.workspace_paths,
+            "memories": memory_snapshots(self.events),
+            "memory_status": self.memory_status,
+            "mod_profile": self.mod_profile,
             "seats": {
                 sid: {**s.model_dump(exclude={"token"}),
                       "connection_status": "LISTENING" if sid in self._wait_events else

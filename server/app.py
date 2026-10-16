@@ -4,36 +4,49 @@
 """
 
 import asyncio
+import hashlib
 import json
 import os
-import secrets
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 # 确保服务端当前目录在模块搜索路径中
 sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from engine import ArenaEngine, SNAPSHOT_FILE
 from archives import ArchiveStore
-from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, FlowPlan, HostCommand, Scenario, SeatDefinition, VisibilityScope
+from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, FlowPlan, HostCommand, RoomSnapshot, Scenario, SeatDefinition, VisibilityScope
 from cli_mount import mount_cli, unmount_cli
+from gameplay import GAMES_ROOT, GameDriver, load_mod
+from mods import ModConflict, ModManager, ModRuntime, mod_file, read_manifest, snapshot_mods
+from host_access import HostAccess, JoinClosed
+from memory_observer import MemoryObserver
 
 
-ADMIN_TOKEN = os.environ.get("ARENA_ADMIN_TOKEN") or secrets.token_urlsafe(32)
+host_access = HostAccess(Path(os.environ.get("ARENA_HOST_CONFIG") or Path(__file__).resolve().parents[1] / "host-login.json"))
+
+
+def admin_cookie_name(request: Request):
+    # Cookie 不按端口隔离；不同本机实例各用自己的名称。
+    return f"arena_admin_{request.url.port or (443 if request.url.scheme == 'https' else 80)}"
+
+
+def admin_session_key(request: Request):
+    return request.headers.get("X-Admin-Session") or request.cookies.get(admin_cookie_name(request))
 
 
 def require_admin(request: Request):
-    """验证主持人令牌；玩家令牌不能访问管理接口"""
-    supplied = request.headers.get("X-Admin-Token") or request.cookies.get("arena_admin")
-    if not supplied or not secrets.compare_digest(supplied, ADMIN_TOKEN):
-        raise HTTPException(status_code=403, detail="需要主持人管理令牌")
+    """管理接口只接受当前服务签发的主持人会话。"""
+    if not host_access.authenticated(admin_session_key(request)):
+        raise HTTPException(status_code=403, detail="请先加入本服务的主持人会话")
 
 
 @asynccontextmanager
@@ -42,7 +55,7 @@ async def lifespan(app: FastAPI):
     cli_path = mount_cli()
     if cli_path:
         print(f"🚀 已自动挂载全局 arena CLI 入口: {cli_path}")
-    print(f"🔐 主持人管理令牌: {ADMIN_TOKEN}")
+    print(f"主持人加入口令文件：{host_access.config_path}；当前服务初始可加入一次")
     maintenance = asyncio.create_task(maintain_actions())
     try:
         yield
@@ -60,8 +73,9 @@ async def maintain_actions():
         await asyncio.sleep(0.5)
         try:
             engine.tick()
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             print(f"超时处理未保存，将重试: {exc}", file=sys.stderr)
+        memory_observer.tick()
 
 
 app = FastAPI(title="Agent Arena", description="通用多智能体独立操作与沙盒博弈基座", lifespan=lifespan)
@@ -77,6 +91,11 @@ async def storage_error(request: Request, exc: OSError):
 async def invalid_operation(request: Request, exc: ValueError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+
+@app.exception_handler(ModConflict)
+async def mod_conflict(request: Request, exc: ModConflict):
+    return JSONResponse(status_code=409, content={"detail": str(exc), "issues": exc.issues})
+
 # 启用 CORS
 app.add_middleware(
     CORSMiddleware,
@@ -88,6 +107,7 @@ app.add_middleware(
 
 # 全局引擎单例 (自动加载历史快照)
 engine = ArenaEngine()
+memory_observer = MemoryObserver(engine)
 archives = ArchiveStore(SNAPSHOT_FILE.parent / "archives")
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -244,6 +264,7 @@ async def player_join(req: JoinRequest):
         "success": True,
         "seat_id": seat.seat_id,
         "token": seat.token,
+        "room_id": engine.room_id,
         "name": seat.name,
         "role": seat.role,
         "room_title": engine.room_title,
@@ -303,6 +324,7 @@ async def player_status(
     return {
         "seat_id": seat_id,
         "phase": engine.phase,
+        "room_id": engine.room_id,
         "round": engine.round_num,
         "status": seat.status if seat else "UNKNOWN",
         "pending_action": action.model_dump(exclude={"result_recipients"}) if action else None
@@ -331,6 +353,13 @@ async def player_submit_act(sub: ActionSubmission):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.get("/api/player/game")
+async def player_game(seat_id: int, room_id: str, x_player_token: str = Header(...)):
+    if room_id != engine.room_id or not engine.verify_token(seat_id, x_player_token):
+        raise HTTPException(status_code=403, detail="房间或席位密钥不匹配")
+    return GameDriver(engine).observe(seat_id)
+
+
 # ----------------------------------------------------------------------
 # 主持人 (Host) 管理与控制台 API
 # ----------------------------------------------------------------------
@@ -340,6 +369,33 @@ async def admin_snapshot(request: Request):
     """获取主持人全知视角快照"""
     require_admin(request)
     return engine.get_host_snapshot()
+
+
+@app.get("/api/admin/perspective")
+async def admin_perspective(request: Request, seat_id: Optional[int] = Query(None, ge=1)):
+    require_admin(request)
+    snapshot = engine.get_host_snapshot()
+    snapshot["perspective_seat"] = seat_id
+    if seat_id is not None:
+        if seat_id not in engine.seats:
+            raise ValueError("观察席位不存在")
+        snapshot["events"] = engine.filter_events_for_seat(seat_id)
+        snapshot["active_actions"] = {sid: action for sid, action in snapshot["active_actions"].items() if sid == seat_id}
+        snapshot["memories"] = {sid: memory for sid, memory in snapshot["memories"].items() if sid == seat_id}
+        if engine.game:
+            snapshot["game"] = {**engine.game, "state": GameDriver(engine).observe(seat_id)["state"]}
+    return snapshot
+
+
+@app.get("/api/admin/game/frontend")
+async def game_frontend(request: Request):
+    require_admin(request)
+    if not engine.game:
+        return {"frontend": None}
+    config = getattr(load_mod(engine.game["name"]), "CLIENT", None)
+    metadata = read_manifest(GAMES_ROOT, engine.game["name"])
+    query = urlencode({"mod": engine.game["name"], "version": metadata["ui_hash"], "generation": mod_manager.generation})
+    return {"frontend": {key: "/game/" + str(value) + "?" + query for key, value in config.items()} if config else None}
 
 
 @app.get("/api/admin/stream")
@@ -459,6 +515,46 @@ async def start_flow(plan: FlowPlan, request: Request):
     return {"success": True, "flow": engine.flow.model_dump()}
 
 
+class GameStartRequest(BaseModel):
+    name: str
+    seats: List[int]
+    options: Dict[str, Any] = {}
+
+
+@app.get("/api/admin/games")
+async def list_game_mods(request: Request):
+    require_admin(request)
+    return {"games": [mod["id"] for mod in mod_manager.catalog().values() if mod.get("type") == "game" and not mod.get("error")]}
+
+
+@app.post("/api/admin/game")
+async def start_game(body: GameStartRequest, request: Request):
+    require_admin(request)
+    if body.name not in mod_manager.enabled:
+        mod_manager.apply([*mod_manager.enabled, body.name])
+    engine.start_game(body.name, body.seats, body.options)
+    return {"success": True, "game": engine.game}
+
+
+@app.post("/api/admin/game/{operation}")
+async def control_game(operation: str, request: Request):
+    require_admin(request)
+    engine.control_game(operation)
+    return {"success": True, "game": engine.game}
+
+
+@app.get("/game/{asset:path}")
+async def game_page(asset: str):
+    if not engine.game:
+        raise HTTPException(status_code=404, detail="当前未加载游戏")
+    load_mod(engine.game["name"])
+    directory = (GAMES_ROOT / engine.game["name"] / "ui").resolve()
+    path = (directory / asset).resolve()
+    if not path.is_relative_to(directory) or not path.is_file():
+        raise HTTPException(status_code=404, detail="游戏页面不存在")
+    return FileResponse(path)
+
+
 @app.post("/api/admin/flow/{operation}")
 async def control_flow(operation: str, request: Request):
     require_admin(request)
@@ -488,20 +584,141 @@ async def read_archive(room_id: str, request: Request, seat_id: Optional[int] = 
         raise HTTPException(status_code=404, detail="存档不存在")
 
 
+class ModSelection(BaseModel):
+    enabled: List[str] = Field(default_factory=list, max_length=100)
+
+
+@app.get("/api/admin/mods")
+async def list_mods(request: Request):
+    require_admin(request)
+    return mod_manager.status()
+
+
+@app.post("/api/admin/mods/validate")
+async def validate_mods(body: ModSelection, request: Request):
+    require_admin(request)
+    result = mod_manager.plan(body.enabled)
+    return {key: result[key] for key in ("valid", "issues", "order")}
+
+
+@app.post("/api/admin/mods")
+async def apply_mods(body: ModSelection, request: Request):
+    require_admin(request)
+    return mod_manager.apply(body.enabled)
+
+
+@app.get("/api/admin/mods/frontend")
+async def mod_frontends(request: Request):
+    require_admin(request)
+    frontends = []
+    for mod_id in mod_manager.enabled:
+        metadata = read_manifest(GAMES_ROOT, mod_id)
+        if metadata["type"] != "extension" or not metadata["frontend"].get("module"):
+            continue
+        query = urlencode({"version": metadata["ui_hash"], "generation": mod_manager.generation})
+        frontends.append({"id": mod_id, **{key: f"/mods/assets/{mod_id}/" + value + "?" + query for key, value in metadata["frontend"].items()}})
+    return {"generation": mod_manager.generation, "frontends": frontends}
+
+
+@app.get("/mods/assets/{mod_id}/{asset:path}")
+async def mod_asset(mod_id: str, asset: str):
+    if mod_id not in mod_manager.enabled:
+        raise HTTPException(status_code=404, detail="Mod 未启用")
+    return FileResponse(mod_file(GAMES_ROOT, mod_id, "ui/" + asset))
+
+
+@app.get("/api/admin/archives/{room_id}/mods")
+async def archive_mods(room_id: str, request: Request):
+    require_admin(request)
+    try:
+        raw = archives.read(room_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="存档不存在")
+    required = snapshot_mods(raw)
+    plan = mod_manager.plan([mod["id"] for mod in required], locked=required)
+    warnings = [{"code": "unverified", "severity": "warning", "mods": [mod["id"]], "message": f"旧存档仅记录了 {mod['id']} {mod['version']}，无法核对历史源码"} for mod in required if not mod.get("rules_hash")]
+    return {"required": required, "valid": plan["valid"], "issues": plan["issues"] + warnings, "order": plan["order"]}
+
+
+@app.post("/api/admin/archives/{room_id}/restore")
+async def restore_archive(room_id: str, request: Request):
+    require_admin(request)
+    try:
+        raw = archives.read(room_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="存档不存在")
+    required = snapshot_mods(raw)
+    raw["mod_profile"] = required
+    RoomSnapshot.model_validate(raw)
+    plan = mod_manager.plan([mod["id"] for mod in required], locked=required)
+    if not plan["valid"]:
+        raise ModConflict(plan["issues"])
+    archives.backup(engine.snapshot().model_dump(mode="json"))
+    mod_manager.apply([mod["id"] for mod in required], locked=required, restore_snapshot=raw)
+    return {"success": True, "room_id": engine.room_id}
+
+
+class HostJoin(BaseModel):
+    password: str = Field("", max_length=4096)
+
+
+class HostUses(BaseModel):
+    additional_uses: int = Field(..., ge=1, le=1000)
+
+
+@app.get("/api/host/access")
+async def host_access_status(request: Request):
+    return {**host_access.info(), "authenticated": host_access.authenticated(admin_session_key(request))}
+
+
+def broadcast_host_access():
+    for queue in engine.sse_queues:
+        queue.put_nowait({"type": "HOST_ACCESS", "data": host_access.info()})
+
+
 @app.post("/api/admin/session")
-async def admin_session(request: Request, response: Response):
-    """将主持人管理令牌换成仅浏览器可读的会话 Cookie"""
-    supplied = request.headers.get("X-Admin-Token")
-    if not supplied or not secrets.compare_digest(supplied, ADMIN_TOKEN):
-        raise HTTPException(status_code=403, detail="主持人管理令牌无效")
+async def admin_session(body: HostJoin, request: Request, response: Response):
+    try:
+        session = host_access.join(body.password, admin_session_key(request))
+    except JoinClosed as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     response.set_cookie(
-        "arena_admin",
-        ADMIN_TOKEN,
+        admin_cookie_name(request),
+        session,
         httponly=True,
-        samesite="strict",
+        samesite="lax",
         secure=False
     )
-    return {"success": True}
+    broadcast_host_access()
+    return {"success": True, **host_access.info()}
+
+
+@app.get("/api/admin/access")
+async def admin_access(request: Request):
+    require_admin(request)
+    return host_access.info()
+
+
+@app.post("/api/admin/access")
+async def add_host_uses(body: HostUses, request: Request):
+    require_admin(request)
+    result = host_access.add_uses(body.additional_uses)
+    broadcast_host_access()
+    return result
+
+
+class WorkspaceRegistration(BaseModel):
+    seat_id: int = Field(..., ge=1)
+    directory: str = Field(..., min_length=1)
+
+
+@app.post("/api/admin/workspaces")
+async def register_workspace(body: WorkspaceRegistration, request: Request):
+    require_admin(request)
+    engine.register_workspace(body.seat_id, body.directory)
+    return {"success": True, "workspace_paths": engine.workspace_paths}
 
 
 @app.get("/api/admin/settings")
@@ -552,11 +769,23 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", response_class=HTMLResponse)
+    @app.get("/game", response_class=HTMLResponse)
     def index():
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
-            return index_file.read_text(encoding="utf-8")
+            files = ("style.css", "event_feed.js", "host_shell.js", "app.js", "mod_panel.js")
+            version = hashlib.sha256(b"".join((STATIC_DIR / filename).read_bytes() for filename in files)).hexdigest()[:16]
+            return HTMLResponse(index_file.read_text(encoding="utf-8").replace("__ASSET_VERSION__", version), headers={"Cache-Control": "no-store"})
         return "<h1>Agent Arena 服务已启动</h1>"
+
+
+mod_manager = ModManager(GAMES_ROOT, engine, app)
+initial_mods = [mod["id"] for mod in engine.mod_profile] or ([engine.game["name"]] if engine.game else [])
+try:
+    mod_manager.apply(initial_mods)
+except ModConflict as exc:
+    print(f"Mod 需要处理：{exc}；可从控制台查看详情", file=sys.stderr)
+app = ModRuntime(mod_manager)
 
 
 if __name__ == "__main__":

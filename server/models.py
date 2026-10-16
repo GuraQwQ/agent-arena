@@ -65,6 +65,8 @@ class ActionRequest(BaseModel):
     min_value: Optional[float] = Field(None, allow_inf_nan=False)
     max_value: Optional[float] = Field(None, allow_inf_nan=False)
     flow_index: Optional[int] = None
+    game_id: Optional[str] = None
+    game_key: Optional[str] = None
 
 
 class ActionSubmission(BaseModel):
@@ -189,6 +191,9 @@ class RoomSnapshot(BaseModel):
     settings: ArenaSettings = Field(default_factory=ArenaSettings)
     receipts: Dict[str, dict] = Field(default_factory=dict)
     flow: FlowState = Field(default_factory=FlowState)
+    game: Optional[dict] = None
+    workspace_paths: Dict[int, str] = Field(default_factory=dict)
+    mod_profile: List[dict] = Field(default_factory=list)
 
 
 class EventAcknowledgement(BaseModel):

@@ -15,12 +15,13 @@ GUIDE_SRC = ROOT_DIR / "templates" / "AGENT_GUIDE.md"
 WORKSPACE_DIR = ROOT_DIR / "workspace"
 
 
-def init_workspaces(count: int, server: str, clean: bool = False):
-    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"🚀 正在为 {count} 个智能体构建专属隔离沙盒...")
+def init_workspaces(count: int, server: str, clean: bool = False, root: Path = WORKSPACE_DIR):
+    root = Path(root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    print(f"🚀 正在为 {count} 个智能体准备独立工作目录...")
 
     for i in range(1, count + 1):
-        agent_dir = WORKSPACE_DIR / f"agent_{i}"
+        agent_dir = root / f"agent_{i}"
         agent_dir.mkdir(parents=True, exist_ok=True)
 
         # 复制 agent.py
@@ -41,10 +42,10 @@ def init_workspaces(count: int, server: str, clean: bool = False):
         if clean or not mem_file.exists():
             mem_file.write_text(f"# Agent {i} 私有思考笔记\n\n- 身份职责:\n- 观察推论:\n", encoding="utf-8")
 
-        print(f"  ✓ 已就绪: workspace/agent_{i}/ (seat={i})")
+        print(f"  ✓ 已就绪: {agent_dir} (seat={i})")
 
     print("\n✅ 所有智能体独立物理工作目录已生成完毕！")
-    print(f"👉 启动智能体时，请分别切换工作目录至: {WORKSPACE_DIR}/agent_N/")
+    print(f"👉 启动智能体时，请分别切换工作目录至: {root}/agent_N/")
 
 
 def main():
@@ -52,9 +53,10 @@ def main():
     parser.add_argument("--count", type=int, default=4, help="智能体席位数量 (默认 4)")
     parser.add_argument("--server", type=str, default="http://127.0.0.1:8000", help="竞技场服务端地址")
     parser.add_argument("--clean", action="store_true", help="强制覆盖已有的配置文件与笔记")
+    parser.add_argument("--root", type=Path, default=WORKSPACE_DIR, help="玩家工作目录的父目录")
 
     args = parser.parse_args()
-    init_workspaces(count=args.count, server=args.server, clean=args.clean)
+    init_workspaces(count=args.count, server=args.server, clean=args.clean, root=args.root)
 
 
 if __name__ == "__main__":
