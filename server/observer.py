@@ -269,6 +269,10 @@ def build_runtime_snapshot(snapshot: Any) -> dict[str, Any]:
     source = _snapshot_mapping(snapshot)
     summary = build_room_summary(source)
     active = source.get("active_actions") or {}
+    seats = source.get("seats") or {}
+    seat_values = list(seats.values()) if isinstance(seats, Mapping) else list(seats)
+    timestamps = [normalize_event(event).timestamp for event in source.get("events") or []]
+    timestamps = [value for value in timestamps if value is not None]
     actions = {}
     for key, value in active.items() if isinstance(active, Mapping) else []:
         item = _mapping(value)
@@ -279,6 +283,13 @@ def build_runtime_snapshot(snapshot: Any) -> dict[str, Any]:
         "active_actions": actions,
         "last_seen_seqs": _json_value(source.get("last_seen_seqs") or {}),
         "settings": _json_value(source.get("settings") or {}),
+        "metrics": {
+            "seat_count": len(seat_values),
+            "online_seats": sum(1 for seat in seat_values if _mapping(seat).get("connection_status") in {"LISTENING", "RECENT"}),
+            "active_action_count": len(active) if isinstance(active, Mapping) else 0,
+            "event_count": len(source.get("events") or []),
+            "last_event_at": max(timestamps) if timestamps else None,
+        },
     }
 
 

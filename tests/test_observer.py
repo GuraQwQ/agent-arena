@@ -70,6 +70,8 @@ class ObserverTest(unittest.TestCase):
         runtime = build_runtime_snapshot(snapshot)
         self.assertNotIn("token", summary["seats"][0])
         self.assertNotIn("token", runtime["events"][0])
+        self.assertEqual(runtime["metrics"]["seat_count"], 1)
+        self.assertEqual(runtime["metrics"]["event_count"], 1)
         self.assertEqual(snapshot, original)
 
     def test_event_page_uses_seq_cursor(self):
