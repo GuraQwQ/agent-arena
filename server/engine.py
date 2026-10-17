@@ -481,7 +481,8 @@ class ArenaEngine:
                 continue
             for seat_id in step.target_seats:
                 self._validate_action(seat_id, step.action_type, step.options, step.timeout,
-                    step.result_scope, step.result_target_seat, step.result_group_id, step.min_value, step.max_value)
+                    step.result_scope, step.result_target_seat, step.result_group_id, step.min_value, step.max_value,
+                    step.action_options)
         self.flow = FlowState(steps=[step.model_copy(deep=True) for step in steps], status="RUNNING")
         self._start_flow_step()
 
@@ -570,14 +571,15 @@ class ArenaEngine:
                 self.cancel_action(seat_id, "行动已超时，跳过该席位")
 
     def _validate_action(self, target_seat, action_type, options, timeout, result_scope,
-                         result_target_seat, result_group_id, min_value, max_value):
+                         result_target_seat, result_group_id, min_value, max_value,
+                         action_options=None):
         if target_seat not in self.seats:
             raise ValueError("目标席位不存在")
         if timeout <= 0:
             raise ValueError("行动限时必须大于 0 秒")
         if action_type not in {"ACT", "SPEAK", "VOTE", "CHOOSE", "NUMBER"}:
             raise ValueError("未知行动类型")
-        if action_type in {"VOTE", "CHOOSE"} and not options:
+        if action_type in {"VOTE", "CHOOSE"} and not options and not action_options:
             raise ValueError("投票或选择题必须提供候选项")
         if min_value is not None and max_value is not None and min_value > max_value:
             raise ValueError("数值下限不能超过上限")
@@ -590,10 +592,11 @@ class ArenaEngine:
     def dispatch_action(self, target_seat: int, action_type: str, prompt: str, options: Optional[List[str]] = None, timeout: int = 60,
                         result_scope: VisibilityScope = VisibilityScope.PUBLIC, result_target_seat: Optional[int] = None,
                         result_group_id: Optional[str] = None, min_value: Optional[float] = None, max_value: Optional[float] = None,
-                        flow_index: Optional[int] = None, game_id: Optional[str] = None, game_key: Optional[str] = None) -> ActionRequest:
+                        flow_index: Optional[int] = None, game_id: Optional[str] = None, game_key: Optional[str] = None,
+                        action_options=None) -> ActionRequest:
         """主持人向指定 Agent 下达行动命令 (点名)"""
         self._validate_action(target_seat, action_type, options, timeout, result_scope,
-                              result_target_seat, result_group_id, min_value, max_value)
+                              result_target_seat, result_group_id, min_value, max_value, action_options)
         if self.game_active() and game_id != self.game["id"]:
             raise ValueError("游戏行动由规则模块管理")
         if flow_index is None and self.flow.status in {"RUNNING", "PAUSED", "AWAITING_HOST"}:
@@ -611,6 +614,7 @@ class ArenaEngine:
             action_type=action_type,
             prompt=prompt,
             options=options or [],
+            action_options=action_options,
             deadline=time.time() + timeout,
             result_scope=result_scope, result_target_seat=result_target_seat,
             result_group_id=result_group_id,
@@ -681,7 +685,9 @@ class ArenaEngine:
             raise PermissionError("当前没有待办行动")
 
         if pending and pending.action_type in {"VOTE", "CHOOSE"}:
-            if (data or {}).get("choice") not in pending.options:
+            choice = (data or {}).get("choice")
+            valid_choices = pending.options or [option.option_id for option in (pending.action_options or [])]
+            if choice not in valid_choices:
                 raise ValueError("请选择主持人提供的候选项")
         if pending and pending.action_type == "NUMBER":
             value = (data or {}).get("value")

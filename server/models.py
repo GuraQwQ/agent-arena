@@ -8,6 +8,11 @@ from uuid import uuid4
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
+try:
+    from .capabilities import ActionOption
+except ImportError:
+    from capabilities import ActionOption
+
 
 class VisibilityScope(str, Enum):
     """事件视野可见性枚举"""
@@ -57,6 +62,7 @@ class ActionRequest(BaseModel):
     action_type: str = "ACT"  # SPEAK(公开发言), ACT(执行动作/技能), VOTE(投票), FREE(自由阐述)
     prompt: str = ""          # 主持人下发的行动指引与要求
     options: List[str] = []   # 可选动作列表 (如有)
+    action_options: Optional[List[ActionOption]] = None
     deadline: float = 0.0     # 截止时间戳
     result_scope: VisibilityScope = VisibilityScope.PUBLIC
     result_target_seat: Optional[int] = None
@@ -90,6 +96,7 @@ class HostCommand(BaseModel):
     secret_reason: Optional[str] = None
     prompt: Optional[str] = None
     options: Optional[List[str]] = None
+    action_options: Optional[List[ActionOption]] = None
     timeout: Optional[int] = Field(60, ge=1, le=86400)
     round_num: Optional[int] = Field(None, ge=1)
     action_type: Literal["ACT", "SPEAK", "VOTE", "CHOOSE", "NUMBER"] = "ACT"
@@ -130,6 +137,7 @@ class FlowStep(BaseModel):
     action_type: Literal["ACT", "SPEAK", "VOTE", "CHOOSE", "NUMBER"] = "ACT"
     prompt: str = ""
     options: List[str] = Field(default_factory=list)
+    action_options: Optional[List[ActionOption]] = None
     timeout: int = Field(60, ge=1, le=86400)
     result_scope: VisibilityScope = VisibilityScope.PUBLIC
     result_target_seat: Optional[int] = None

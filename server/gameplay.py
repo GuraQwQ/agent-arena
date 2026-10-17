@@ -57,9 +57,10 @@ class GameDriver:
             specification = dict(specification)
             seat_id = specification.pop("target_seat")
             key = str(specification.pop("key", state.get("turn", 0)))
+            action_options = specification.pop("action_options", None)
             if seat_id in targets:
                 raise ValueError("每个席位只能有一个当前游戏行动")
-            targets[seat_id] = (key, specification)
+            targets[seat_id] = (key, specification, action_options)
         for seat_id, pending in list(self.room.active_actions.items()):
             if pending.game_id != game["id"]:
                 continue
@@ -68,11 +69,12 @@ class GameDriver:
                 self.room.seats[seat_id].status = "IDLE"
                 self.room.record_event("ACTION_CANCEL", "【游戏行动更新】", "游戏局势已更新，请重新获取当前指令",
                     to_seat=seat_id, scope=VisibilityScope.PRIVATE, data={"request_id": pending.request_id})
-        for seat_id, (key, specification) in targets.items():
+        for seat_id, (key, specification, action_options) in targets.items():
             if seat_id not in self.room.active_actions:
                 specification.setdefault("action_type", "ACT")
                 specification.setdefault("result_scope", VisibilityScope.HOST_ONLY)
-                self.room.dispatch_action(seat_id, game_id=game["id"], game_key=key, **specification)
+                self.room.dispatch_action(seat_id, game_id=game["id"], game_key=key,
+                                          action_options=action_options, **specification)
 
     def submit(self, seat_id, data):
         game = self.room.game
