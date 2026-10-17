@@ -33,6 +33,7 @@ from memory_observer import MemoryObserver
 
 
 host_access = HostAccess(Path(os.environ.get("ARENA_HOST_CONFIG") or Path(__file__).resolve().parents[1] / "host-login.json"))
+DEBUG_MODE = os.environ.get("ARENA_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def admin_cookie_name(request: Request):
@@ -46,6 +47,8 @@ def admin_session_key(request: Request):
 
 def require_admin(request: Request):
     """管理接口只接受当前服务签发的主持人会话。"""
+    if DEBUG_MODE:
+        return
     if not host_access.authenticated(admin_session_key(request)):
         raise HTTPException(status_code=403, detail="请先加入本服务的主持人会话")
 
@@ -689,7 +692,8 @@ class HostUses(BaseModel):
 
 @app.get("/api/host/access")
 async def host_access_status(request: Request):
-    return {**host_access.info(), "authenticated": host_access.authenticated(admin_session_key(request))}
+    return {**host_access.info(), "debug_mode": DEBUG_MODE,
+            "authenticated": DEBUG_MODE or host_access.authenticated(admin_session_key(request))}
 
 
 def broadcast_host_access():
@@ -699,6 +703,9 @@ def broadcast_host_access():
 
 @app.post("/api/admin/session")
 async def admin_session(body: HostJoin, request: Request, response: Response):
+    if DEBUG_MODE:
+        response.set_cookie(admin_cookie_name(request), "debug", httponly=True, samesite="lax", secure=False)
+        return {"success": True, **host_access.info(), "debug_mode": True}
     try:
         session = host_access.join(body.password, admin_session_key(request))
     except JoinClosed as exc:
@@ -792,6 +799,11 @@ if STATIC_DIR.exists():
     @app.get("/", response_class=HTMLResponse)
     @app.get("/game", response_class=HTMLResponse)
     def index():
+        react_index = STATIC_DIR / "react" / "index.html"
+        if react_index.exists():
+            return HTMLResponse(react_index.read_text(encoding="utf-8"), headers={
+                "Cache-Control": "no-store"
+            })
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
             files = ("style.css", "event_feed.js", "host_shell.js", "app.js", "mod_settings.js", "mod_panel.js")

@@ -19,6 +19,10 @@ data/
 games/
 test_seat/
 
+# React 构建依赖
+frontend/node_modules/
+frontend/.vite/
+
 # 操作系统临时文件
 .DS_Store
 Thumbs.db
