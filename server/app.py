@@ -30,6 +30,8 @@ from mods import ModConflict, ModManager, ModRuntime, mod_file, read_manifest, s
 from mod_settings import ModSettingsError
 from host_access import HostAccess, JoinClosed
 from memory_observer import MemoryObserver
+from content_packs import scan_content_packs
+from observer import build_event_page, build_room_summary, build_runtime_snapshot
 
 
 host_access = HostAccess(Path(os.environ.get("ARENA_HOST_CONFIG") or Path(__file__).resolve().parents[1] / "host-login.json"))
@@ -375,6 +377,25 @@ async def admin_snapshot(request: Request):
     return engine.get_host_snapshot()
 
 
+@app.get("/api/admin/summary")
+async def admin_summary(request: Request):
+    require_admin(request)
+    return build_room_summary(engine.get_host_snapshot())
+
+
+@app.get("/api/admin/runtime")
+async def admin_runtime(request: Request):
+    require_admin(request)
+    return build_runtime_snapshot(engine.get_host_snapshot())
+
+
+@app.get("/api/admin/events")
+async def admin_events(request: Request, since_seq: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
+    require_admin(request)
+    events = [event for event in engine.get_host_snapshot().get("events", []) if event.get("seq", 0) > since_seq]
+    return build_event_page(events, limit=limit)
+
+
 @app.get("/api/admin/perspective")
 async def admin_perspective(request: Request, seat_id: Optional[int] = Query(None, ge=1)):
     require_admin(request)
@@ -460,6 +481,7 @@ async def admin_command(cmd: HostCommand, request: Request):
                 action_type=cmd.action_type,
                 prompt=cmd.prompt or "请针对当前局势做出你的行动与分析。",
                 options=cmd.options or [],
+                action_options=cmd.action_options,
                 timeout=cmd.timeout if cmd.timeout is not None else 60,
                 result_scope=cmd.result_scope, result_target_seat=cmd.result_target_seat,
                 result_group_id=cmd.result_group_id, min_value=cmd.min_value, max_value=cmd.max_value
@@ -600,6 +622,12 @@ class ModSettingsUpdate(BaseModel):
 async def list_mods(request: Request):
     require_admin(request)
     return mod_manager.status()
+
+
+@app.get("/api/admin/content-packs")
+async def list_content_packs(request: Request):
+    require_admin(request)
+    return scan_content_packs()
 
 
 @app.post("/api/admin/mods/validate")

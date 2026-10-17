@@ -18,6 +18,9 @@ export function jsonRequest(url, body, method = "POST") {
 export const arenaApi = {
   access: () => request("/api/host/access"),
   snapshot: () => request("/api/admin/snapshot"),
+  summary: () => request("/api/admin/summary"),
+  runtime: () => request("/api/admin/runtime"),
+  events: (sinceSeq = 0, limit = 100) => request(`/api/admin/events?since_seq=${encodeURIComponent(sinceSeq)}&limit=${encodeURIComponent(limit)}`),
   perspective: seatId => request(`/api/admin/perspective?seat_id=${encodeURIComponent(seatId)}`),
   joinHost: password => jsonRequest("/api/admin/session", { password }),
   command: body => jsonRequest("/api/admin/command", body),
@@ -28,6 +31,7 @@ export const arenaApi = {
   archive: roomId => request(`/api/admin/archives/${encodeURIComponent(roomId)}`),
   saveArchive: () => jsonRequest("/api/admin/archives", {}, "POST"),
   mods: () => request("/api/admin/mods"),
+  contentPacks: () => request("/api/admin/content-packs"),
   applyMods: enabled => jsonRequest("/api/admin/mods", { enabled }),
   modSettings: (modId, values) => jsonRequest(`/api/admin/mods/${encodeURIComponent(modId)}/settings`, { values }, "PUT")
 };

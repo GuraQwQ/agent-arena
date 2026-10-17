@@ -202,12 +202,19 @@ function DirectorSettings({ snapshot, onNotice }) {
 
 function ModSettings({ onNotice }) {
   const [status, setStatus] = useState(null);
+  const [contentPacks, setContentPacks] = useState(null);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState("idle");
   const [filter, setFilter] = useState("all");
   const refresh = useCallback(async () => {
     setPhase("checking");
-    try { setStatus(await arenaApi.mods()); setPhase("ready"); }
+    try {
+      const [modsResult, packsResult] = await Promise.allSettled([arenaApi.mods(), arenaApi.contentPacks()]);
+      if (modsResult.status === "rejected") throw modsResult.reason;
+      setStatus(modsResult.value);
+      if (packsResult.status === "fulfilled") setContentPacks(packsResult.value);
+      setPhase("ready");
+    }
     catch (error) { setPhase("error"); onNotice(error.message, true); }
   }, [onNotice]);
   useEffect(() => { refresh(); }, [refresh]);
@@ -234,7 +241,7 @@ function ModSettings({ onNotice }) {
   if (!status) return <div className="settings-content"><div className="loading-state">正在读取 Mod 清单…</div></div>;
   const visibleMods = status.mods.filter(mod => filter === "all" || filter === "enabled" && status.enabled.includes(mod.id) || filter === "issues" && (mod.error || status.issues?.some(issue => issue.mods?.includes(mod.id))) || filter === "disabled" && !status.enabled.includes(mod.id));
   const phaseLabel = { checking: "检查依赖…", reloading: "重载运行期…", error: "需要处理", ready: "运行期已同步", idle: "" }[phase];
-  return <div className="settings-content"><SettingsSection title="运行状态"><div className="settings-actions"><button className="button button-quiet" onClick={refresh} disabled={busy}>刷新列表</button><button className="button button-quiet" onClick={reloadEnabled} disabled={busy}>重载已启用</button><span className={`mod-phase mod-phase-${phase}`} role="status">{phaseLabel}</span></div><div className="mod-filters" role="group" aria-label="Mod 状态筛选">{[["all", "全部"], ["enabled", "已启用"], ["disabled", "未启用"], ["issues", "有问题"]].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}</div></SettingsSection>{status.issues?.length > 0 && <div className="issue-list" aria-live="polite">{status.issues.map((issue, index) => <div className={`issue ${issue.severity || "error"}`} key={`${issue.code}-${index}`}><strong>{issue.message}</strong><span>{issue.mods?.join("、")}{issue.resource ? ` · ${issue.resource}` : ""}</span></div>)}</div>}<SettingsSection title="已发现的 Mod"><div className="mod-list">{visibleMods.length ? visibleMods.map(mod => <ModCard key={mod.id} mod={mod} status={status} busy={busy} onToggle={toggle} onSave={saveSettings} />) : <p className="subtle">当前筛选没有 Mod。</p>}</div></SettingsSection><SettingsSection title="加载顺序"><ol className="load-order">{(status.order || []).map(id => <li key={id}>{id}</li>)}</ol></SettingsSection></div>;
+  return <div className="settings-content"><SettingsSection title="运行状态"><div className="settings-actions"><button className="button button-quiet" onClick={refresh} disabled={busy}>刷新列表</button><button className="button button-quiet" onClick={reloadEnabled} disabled={busy}>重载已启用</button><span className={`mod-phase mod-phase-${phase}`} role="status">{phaseLabel}</span></div><div className="mod-filters" role="group" aria-label="Mod 状态筛选">{[["all", "全部"], ["enabled", "已启用"], ["disabled", "未启用"], ["issues", "有问题"]].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}</div></SettingsSection>{contentPacks && <SettingsSection title="声明式内容包"><p className="subtle">已加载 {contentPacks.packs?.length || 0} 个内容包；内容包只提供数据，不执行代码。</p>{contentPacks.packs?.map(pack => <p className="field-state" key={pack.id}>{pack.name} · {pack.version} · {pack.hash?.slice(0, 12)}</p>)}{contentPacks.warnings?.map((warning, index) => <div className="issue warning" key={`pack-warning-${index}`}>{warning}</div>)}</SettingsSection>}{status.issues?.length > 0 && <div className="issue-list" aria-live="polite">{status.issues.map((issue, index) => <div className={`issue ${issue.severity || "error"}`} key={`${issue.code}-${index}`}><strong>{issue.message}</strong><span>{issue.mods?.join("、")}{issue.resource ? ` · ${issue.resource}` : ""}</span></div>)}</div>}<SettingsSection title="已发现的 Mod"><div className="mod-list">{visibleMods.length ? visibleMods.map(mod => <ModCard key={mod.id} mod={mod} status={status} busy={busy} onToggle={toggle} onSave={saveSettings} />) : <p className="subtle">当前筛选没有 Mod。</p>}</div></SettingsSection><SettingsSection title="加载顺序"><ol className="load-order">{(status.order || []).map(id => <li key={id}>{id}</li>)}</ol></SettingsSection></div>;
 }
 
 function ModCard({ mod, status, busy, onToggle, onSave }) {
