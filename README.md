@@ -1,178 +1,192 @@
-# Agent Arena · 通用多智能体独立操作与沙盒博弈基座
+# Agent Arena
+
+面向本地多智能体实验的主持人控制台与非完全信息博弈基座。
+
+Agent Arena 把多个 CLI Agent 放进同一个可持久化房间：每个席位拥有独立令牌和视野，主持人负责派发行动、控制回合、查看实时事件和恢复存档。具体玩法由本地 Mod 提供，核心服务只负责房间、权限、事件、快照和运行期管理。
 
 [English](README.en.md) | [简体中文](README.md)
 
-> **面向异构大模型命令行智能体（Claude Code、ZCode、Codex CLI 等）的通用非完全信息博弈与多 Agent 协同底座。**  
-> 具备物理目录隔离、服务端令牌视野矩阵（战争迷雾）、退出码被动唤醒机制、**一键口令自举接入**以及人类主持人全知调度 Web 控制台。
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/Console-React-61DAFB?logo=react&logoColor=20232A)](https://react.dev/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## 先看界面
 
----
+主持人视角包含席位状态、事件时间线、玩家 `memory.md` 写入、游戏桌面、回放和 Mod 管理：
 
-## 一、 项目背景与设计哲学
+![Agent Arena 主持人控制台](docs/assets/host-console.png)
 
-在传统的多智能体（Multi-Agent）框架中，往往存在两个难以落地的痛点：
-1. **死循环轮询浪费 Token**：Agent 频繁调用 API 轮询最新状态，造成高昂的 API 费用与速率限制（Rate Limit）。
-2. **缺乏真正的视野隔离（全知作弊）**：多个 Agent 共享单一上下文窗口或全局聊天记录，无法实现严格的非完全信息博弈（如暗中结盟、私密调查、卧底身份掩护）。
-3. **初始化配置繁重原始**：需要人类手动向每个 Agent 对话框人肉复制大段系统 Prompt，费时且易出错。
+游戏 Mod 可以提供自己的桌面和事件摘要。下面是斗地主 Mod 的一个本地运行示例：
 
-**Agent Arena** 提炼并重构了桌游级多智能体系统的核心精髓，剥离所有特定业务规则，抽象出一套**高内聚、低耦合的通用智能体操作基座**：
+![斗地主 Mod 游戏桌面](docs/assets/doudizhu-table.png)
 
-* **即用即抛全局 CLI（Ephemeral Arena CLI）**：服务端启动时自动挂载全局 `arena` 命令，智能体工作目录下**零代码文件污染**，直接执行 `arena wait` / `arena act`；服务端关闭时自动自毁注销，系统零垃圾残留！
-* **断电/重启无缝续盘（State Snapshot & Recovery）**：每次状态变更自动原子落盘。临时关服改代码或重启电脑，再次开服秒级从快照恢复全局态，智能体带着旧凭证无缝接盘继续玩！
-* **零轮询开销（被动事件驱动）**：基于 HTTP 长轮询与**操作系统退出码（Exit Code 42 / 43）**，让 Agent Harness 在静默等待中零消耗，事件到达时精准唤醒。
-* **物理目录沙盒（Sandbox）**：每个 Agent 仅拥有独立的执行工作目录（`workspace/agent_N/`），读写完全隔离。
-* **服务端战争迷雾（Fog of War）**：基于 Token 权限控制，全员公开、定向私信、仅主持人可见的战术意图（`secret_reason`）由服务端强行过滤，杜绝泄密。
-* **人类主持人全知中枢（Host WebUI）**：开箱即用的现代化暗色 Web 控制台，实时掌控全局视角、推进阶段演化、点名 Agent 行动并批阅心声。
+## 它解决什么问题
 
----
+普通多 Agent 程序通常把所有消息放在一个上下文里，或者让 Agent 高频轮询服务器。这样既难以模拟秘密信息，也很难让人类主持人可靠地控制节奏。
 
-## 二、 架构全景
+Agent Arena 提供几个稳定的运行时能力：
+
+- **非完全信息**：事件支持 `PUBLIC`、`PRIVATE`、`GROUP` 和 `HOST_ONLY`，服务端按席位令牌过滤视野。
+- **被动唤醒**：Agent 使用长轮询等待；收到行动或观察更新时分别以退出码 `42`、`43` 返回给外部 Harness。
+- **主持人控制台**：实时 SSE、席位和连接状态、点名行动、流程编排、主持视角、玩家笔记、回放和主题设置。
+- **可恢复状态**：状态变更原子写入快照，服务重启后恢复房间、事件、席位和游戏状态。
+- **可组合 Mod**：Mod 声明依赖、冲突、加载顺序、覆盖资源和设置 Schema，启用或设置变更后立即重载。
+- **独立游戏桌面**：游戏 Mod 自己定义规则状态、行动请求、观察视图、事件摘要和前端桌面。
+- **声明式内容包**：内容包只提供世界观、牌组、提示词、主题或规则参数；服务端会校验清单、计算哈希并报告导入警告。
+- **结构化行动选项**：`ActionOption` 为 Agent 提供稳定编号、目标、数值/正文约束和风险标签，同时保留旧的字符串选项接口。
+
+## 架构
 
 ```mermaid
-flowchart TD
-    subgraph HostConsole["主持人中枢 (Human Host)"]
-        WebUI["Web 控制台 (SSE 全知流 + REST 指令)<br/>http://localhost:8000"]
-    end
+flowchart LR
+    Host[主持人 Web 控制台]
+    Core[Arena Core\n房间 / 席位 / 令牌 / 事件 / 快照]
+    Runtime[运行期\nSSE / 长轮询 / 行动调度]
+    Mod[Trusted Game Mod\n规则 / 状态机 / 桌面]
+    Pack[Content Pack\n声明式内容]
+    Agent1[Agent 1 工作目录]
+    Agent2[Agent 2 工作目录]
 
-    subgraph HubServer["竞技场服务端 (Python FastAPI)"]
-        direction TB
-        Engine["核心状态机 (ArenaEngine)"]
-        Fog["视野过滤矩阵 (Visibility Scope)"]
-        LongPoll["长轮询调度队列 (asyncio.Event)"]
-        BootAPI["自举装配服务 (/bootstrap/N)"]
-        Engine --- Fog --- LongPoll --- BootAPI
-    end
-
-    subgraph Workspaces["物理隔离沙盒 (Multi-Cwd Sandboxes)"]
-        subgraph Agent1["workspace/agent_1/"]
-            C1["agent.py (纯标准库)"]
-            M1["memory.md (私有思考)"]
-            A1_txt["action.txt (长陈词提交)"]
-            H1["运行环境: Claude Code<br/>(模型: Claude 3.7)"]
-        end
-        subgraph Agent2["workspace/agent_2/"]
-            C2["agent.py (纯标准库)"]
-            M2["memory.md (私有思考)"]
-            A2_txt["action.txt (长陈词提交)"]
-            H2["运行环境: ZCode / Codex<br/>(模型: DeepSeek-V3)"]
-        end
-    end
-
-    WebUI <-->|"SSE 快照推流 & REST 控制"| HubServer
-    H1 -->|"自举启动 & 挂起 wait"| C1
-    H2 -->|"自举启动 & 挂起 wait"| C2
-    C1 -->|"长轮询 wait (退出码 42/43)"| LongPoll
-    C2 -->|"长轮询 wait (退出码 42/43)"| LongPoll
-    C1 -->|"提交动作与战术心声 /act"| Engine
-    C2 -->|"提交动作与战术心声 /act"| Engine
+    Host <-->|REST + SSE| Core
+    Core --> Runtime
+    Runtime --> Mod
+    Pack -.提供数据.-> Mod
+    Agent1 <-->|wait / act| Runtime
+    Agent2 <-->|wait / act| Runtime
 ```
 
----
+核心模块之间的职责边界：
 
-## 三、 核心通信契约（退出码规范）
+| 模块 | 负责 | 不负责 |
+| --- | --- | --- |
+| `ArenaEngine` | 房间状态、席位、事件、视野、快照和流程 | 某个游戏的牌型或胜负规则 |
+| `GameDriver` | 调用游戏 Mod 的 `create / requests / step / observe` | 替游戏 Mod 发明领域逻辑 |
+| `ModManager` | 清单、依赖、冲突、设置、重载和存档校验 | 解析任意 Python 代码的语义冲突 |
+| `client/agent.py` | 标准库客户端、等待、提交、事件日志 | 代替 Agent 思考或决定行动 |
+| React 控制台 | 主持观察、过滤、设置和游戏前端挂载 | 修改服务端权限或游戏规则 |
 
-智能体客户端 `agent.py` 严格使用 Python 3 标准库编写（零第三方依赖），并定义了标准退出码与外部 CLI Harness 进行联动：
+## 快速启动
 
-| 退出码 | 状态名 | 智能体行动指引与契约 |
-| :---: | :---: | :--- |
-| **`42`** | `ACTION_REQUIRED` | **轮到你正式行动**。输出主持人行动指引 Prompt。Agent 读取指令 -> 将陈词或决策写入 `action.txt` -> 运行 `python agent.py act --reason "..."` 提交 -> **立即重新启动后台 `wait`**。 |
-| **`43`** | `OBSERVE_UPDATE` | **视野内新动态**。环境中有新公开信息或他人陈词。Agent 仅花费 1 分钟简短更新私有 `memory.md`，**禁止行动**，立即重新启动后台 `wait`。 |
-| **`0`** | `TIMEOUT / END` | 长轮询正常超时静默退出（直接重启 wait 继续挂起），或本局演练结束。 |
+需要 Python 3.10 或更新版本。后端依赖在 `requirements.txt`，前端构建需要 Node.js。
 
----
+```powershell
+git clone https://github.com/GuraQwQ/agent-arena.git
+cd agent-arena
 
-## 四、 快速上手
-
-### 1. 安装与启动服务端
-
-服务端仅依赖 `fastapi` 与 `uvicorn`：
-
-```bash
-# 1. 安装依赖
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# 2. 启动竞技场服务端 (默认端口 8000)
+# 启动本地服务
 cd server
-python -m uvicorn app:app --host 0.0.0.0 --port 8000 --ws none
+python -m uvicorn app:app --host 127.0.0.1 --port 8000 --ws none
 ```
-打开浏览器访问：**`http://localhost:8000`**，即可进入主持人 Web 控制台。
 
----
+然后打开 <http://127.0.0.1:8000>。首次启动会在项目根目录创建被忽略的 `host-login.json`，主持人可以在那里设置本地口令。每个服务默认只允许一次新的主持人加入，已登录主持人可以在控制台增加次数。
 
-### 2. 智能体极速接入（即用即抛全局 `arena` CLI，零代码文件污染）
+生产或局域网部署前，请自行设置 `ARENA_HOST_CONFIG`、`ARENA_DATA_DIR` 和监听地址。这个项目默认面向本机服务，主持人令牌文件和运行数据不会提交到仓库。
 
-服务端启动后，已自动在运行环境中挂载临时全局命令 **`arena`**。
-在智能体的工作目录中，**不需要存放任何 `.py` 脚本代码**，直接使用全局命令交互：
+## 接入 Agent
+
+### 方式一：控制台自举
+
+1. 在主持人控制台创建或选择席位。
+2. 复制席位卡片中的自举命令，在该 Agent 的独立工作目录运行。
+3. 按提示启动监听。
 
 ```bash
-# 1. 在主持人控制台的席位卡片中复制该席位的自举命令，
-#    在对应 Agent 工作目录执行。命令会保存凭证至本地 .agent.json
-python -c "import urllib.request as u; exec(u.urlopen('主持人复制的自举地址').read().decode('utf-8'))"
-
-# 2. 后台挂起监听 (退出码 42 触发正式行动，退出码 43 触发记笔记)
-arena watch
-
-# 3. 提交行动与仅主持人可见的战术心声
-arena act --reason "这是我的潜伏战术" "我提议大家核验刚才的线索。"
+python agent.py watch
 ```
 
-服务首次启动会生成本地 `host-login.json`，可自行修改其中的 `password`。打开控制台输入口令加入主持人，当前服务默认只允许成功加入一次；登录后刷新、切换观察视角继续复用浏览器会话。在“主持人加入管理”中可以增加当前服务的加入次数。修改文件不会恢复已消耗的次数；服务重启后会话失效，初始次数恢复为一次。可用 `ARENA_HOST_CONFIG` 指定文件位置。
-
-文件中的口令只用于加入；管理接口使用当前服务签发的浏览器会话。玩家令牌只用于对应席位。控制台默认展示已登记玩家工作目录中 `memory.md` 最近一次写入，区分新增、删除和既有内容；变化保存在主持人事件与存档中，首次采集显示真实文件写入时间。
-
-> 💡 **断电/重启无缝续盘**：  
-> 中途关闭服务后，再次启动会从 `data/room_state.json` 恢复当前对局与令牌。`arena watch` 会在断线后自动重连；收到 42/43 后交给 Agent 处理，再运行 `arena watch`。换局后需要执行新席位的自举命令。
-
-控制台“房间设置”可以关闭或开启未点名行动（默认关闭），并设置事件按回合数或秒数滚动隐藏；对应输入留空表示不过期。
-
-控制台还支持剧本与席位编辑、阵营消息、秘密投票与数值决策、回合流程编排、存档回放和视角导出。操作与接口见 [主持人操作手册](docs/features.md)，示例剧本见 [多方评审议会](templates/scenarios/discussion.json)。
-
-实时动态默认聚焦可读结果，原始指令与 JSON 可展开查看；设置中可按类型、范围、席位与关键词过滤，并选择主题、字号和阅读密度。统一 Mod 管理支持依赖与冲突诊断、立即重载，以及存档所需 Mod 的校验与恢复。
-
-可通过本机 `games/` Mod 接入独立游戏状态机、服务端规则校验及自定义界面；用 `ARENA_DATA_DIR` 为每局指定独立数据目录。接口和本机斗地主启动方式见 [游戏 Mod 手册](docs/game-mods.md)。
-
-#### 也可以直接在聊天对话中发送一键自举口令：
-在智能体对话框（如 Claude Code / ZCode）中直接发给它一句话：
-> “请执行命令接入竞技场 1 号席位并开始行动：  
-> `python -c "import urllib.request as u; exec(u.urlopen('主持人复制的 /bootstrap/1?claim_token=... 地址').read().decode('utf-8'))"`”
-
-智能体执行后将自动拉取专属角色设定、配置身份并进入后台挂起循环！*(Web 控制台席位卡片上有一键复制按钮)*
-
----
-
-### 3. 单机快速模拟测试（无需消耗真实 LLM Token）
-
-项目提供了自动化模拟机器人脚本，供开发者在无外部大模型接入的情况下单机联调全流程：
-
-先分别在 `workspace/agent_1/`、`workspace/agent_2/` 执行主持人控制台复制的自举命令，再启动模拟脚本：
+收到 `42` 时，Agent 读取主持人指引，将内容写入 `action.txt`，然后提交：
 
 ```bash
-# 启动 1号 模拟智能体
-python scripts/mock_agent.py --seat 1 --name "博弈测试者A"
-
-# 启动 2号 模拟智能体 (开启另一个终端)
-python scripts/mock_agent.py --seat 2 --name "博弈测试者B"
+python agent.py act --reason "仅主持人可见的行动动机"
 ```
 
-测试流程：
-1. 观察 Web 控制台 `http://localhost:8000`，1号与 2号 席位显示“挂起等待中”。
-2. 点击右侧**“变更阶段”**，观察控制台事件与智能体捕获退出码 43（更新思考笔记）。
-3. 选择 1号席位，输入引导指引，点击**“⚡ 发出行动指令”**，观察 1号席位捕获退出码 42，模拟思考后自动提交决策与仅主持人可见的战术心声！
+收到 `43` 时只更新本地 `memory.md`，不要越过主持人回合行动。客户端会把已经接收的事件写入本地 `events.jsonl`，服务重启后可以继续使用原席位令牌。
 
----
+### 方式二：生成工作目录
 
-## 五、 适用场景拓展
+```bash
+python scripts/init_workspace.py --count 3 --server http://127.0.0.1:8000
+```
 
-* **剧本杀与 TRPG 跑团**：人类主持人扮演 DM，为各位 Agent 发送专属身世与秘密线索，掌控推进节奏。
-* **多模型协同 Code Review 议会**：针对同一个 PR，安全评审 Agent、性能审计 Agent、架构 Agent 各自独立运行并向主席汇报。
-* **网络安全红蓝对抗**：攻击方与防御方视野严格隔离，裁判根据双方提交的操作判定权限渗透与防御效果。
-* **非完全信息博弈实验**：囚徒困境、海盗分金币、暗标拍卖、谁是卧底等博弈论研究。
+无真实 LLM 时可用模拟 Agent 联调：
 
----
+```bash
+python scripts/mock_agent.py --seat 1 --name "模拟玩家 1"
+```
 
-## 六、 许可证
+完整的玩家通信字段和退出码说明见 [通信协议](docs/protocol.md)。
 
-本项目采用 [MIT License](LICENSE) 开源。
+## Mod 与内容包
+
+### 游戏 Mod
+
+每个本地 Mod 位于 `games/<mod-id>/`，目录被 Git 忽略，适合存放本机游戏、私有规则和自定义桌面。游戏入口至少提供：
+
+```python
+API_VERSION = 1
+
+def create(seat_ids, options): ...
+def requests(state): ...
+def step(state, seat_id, data): ...
+def observe(state, seat_id): ...
+```
+
+Mod 可以在 `requests()` 返回结构化 `action_options`，也可以提供 `ui/view.js` 和 `ui/view.css`。主持人通过“设置 → Mod”查看依赖、冲突、加载顺序、设置项和存档所需版本。
+
+### 声明式内容包
+
+内容包放在 `data/content-packs/`，也可以使用 `ARENA_CONTENT_PACKS_DIR` 指定目录。服务端只读取清单，不执行包内代码：
+
+```json
+{
+  "id": "example-world",
+  "name": "示例世界",
+  "version": "1.0.0",
+  "format": "arena.content.v1",
+  "priority": 0
+}
+```
+
+重复 `id` 按 `priority` 选择；坏包不会阻塞其它包，主持人可以在 `/api/admin/content-packs` 查看警告和 SHA-256。需要执行规则、推进状态或提供复杂桌面时，应使用可信游戏 Mod。
+
+更多清单字段、设置 Schema 和存档兼容规则见 [游戏与 Mod 管理](docs/game-mods.md)。
+
+## 适用场景
+
+- 剧本杀、TRPG 和主持人驱动的桌游
+- 斗地主、狼人杀、密室调查等非完全信息玩法
+- 多模型代码审查或架构评审会议
+- 红蓝对抗、权限博弈和安全演练
+- 可重复的 Agent 行为观察与长期记忆实验
+
+## 开发与验证
+
+```powershell
+# 后端语法检查
+python -m compileall -q server tests
+
+# 测试
+$env:PYTHONPATH = "tests;server"
+python -m unittest discover -s tests -p "test_*.py"
+
+# 构建 React 控制台
+npm --prefix frontend install
+npm --prefix frontend run build
+```
+
+## 文档导航
+
+- [主持人操作手册](docs/features.md)
+- [玩家通信协议](docs/protocol.md)
+- [游戏与 Mod 管理](docs/game-mods.md)
+- [示例剧本](templates/scenarios/discussion.json)
+- [MIT License](LICENSE)
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。

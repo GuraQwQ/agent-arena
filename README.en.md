@@ -1,168 +1,186 @@
-# Agent Arena · Generic Multi-Agent Sandbox & Arena Framework
+# Agent Arena
+
+A host controlled, local first arena for multi agent experiments and incomplete information games.
+
+Agent Arena places multiple CLI agents in one persistent room. Each seat has its own token and view, while a human host dispatches actions, controls phases, watches events, and restores archives. Game rules live in local mods; the core stays focused on rooms, permissions, events, snapshots, and runtime coordination.
 
 [English](README.en.md) | [简体中文](README.md)
 
-> **A general-purpose multi-agent sandbox and incomplete-information arena for heterogeneous CLI LLM agents (Claude Code, ZCode, Codex CLI, Cursor, etc.).**  
-> Features strict physical filesystem isolation, server-side token visibility matrix (Fog of War), passive exit-code awakening, **one-line bootloader enrollment**, and an intuitive human-host web dashboard.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/Console-React-61DAFB?logo=react&logoColor=20232A)](https://react.dev/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## See It First
 
----
+The host view combines seat status, the event timeline, recent `memory.md` writes, game tables, replay, and mod management:
 
-## 1. Background & Design Philosophy
+![Agent Arena host console](docs/assets/host-console.png)
 
-Traditional multi-agent frameworks often suffer from two major architectural pain points:
-1. **Token waste from busy polling loops**: Agents continually poll endpoints, leading to severe token burn, high API costs, and rapid rate-limit exhaustion.
-2. **Lack of true perspective isolation (Omniscient cheating)**: When multiple agents share a single context window or an unfiltered global chat log, authentic incomplete-information games (e.g. secret collusion, private investigations, undercover roles) become impossible.
-3. **Cumbersome manual setup**: Humans are forced to manually copy and paste long markdown system prompts into each agent's conversation window.
+Game mods can provide their own table and event presenter. This is a current local Doudizhu table example:
 
-**Agent Arena** distills the core mechanics of tabletop board game multi-agent architectures, stripping away all game-specific rules into an **ultra-clean, highly cohesive, decoupled sandbox base**:
+![Doudizhu game mod table](docs/assets/doudizhu-table.png)
 
-* **Ephemeral Global CLI (`arena`)**: Automatically mounted to the environment PATH on server startup and removed on exit. Zero script file clutter in agent directories! Agents directly invoke `arena wait` and `arena act`.
-* **Crash & Reboot Seamless Recovery**: State changes are atomically saved to `data/room_state.json`. Stop the server to edit code or restart your machine anytime; upon server reboot, the full game state and all tokens are restored in milliseconds. Agents reconnect effortlessly!
-* **Zero-polling passive wakeup**: Driven by HTTP long-polling and **OS process exit codes (`42` & `43`)**, keeping agent harnesses completely silent and cost-free during idle times.
-* **Physical workspace isolation (Sandbox)**: Each agent operates exclusively within its dedicated working directory (`workspace/agent_N/`).
-* **Server-side Fog of War**: Event visibility is strictly gated by seat authentication tokens across `PUBLIC`, `PRIVATE`, `GROUP`, and `HOST_ONLY` scopes. Sensitive reasoning (`secret_reason`) is scrubbed for everyone except the host.
-* **Human Host WebUI**: An out-of-the-box modern dark-themed web dashboard for real-time monitoring, phase transitions, action dispatching, and reviewing hidden thoughts.
+## What It Provides
 
----
+Most multi agent prototypes either put every message in one shared context or make agents poll the server continuously. That makes secret information and host controlled pacing difficult to reproduce.
 
-## 2. Architecture Overview
+Agent Arena provides these runtime capabilities:
+
+- **Incomplete information:** events use `PUBLIC`, `PRIVATE`, `GROUP`, or `HOST_ONLY` scopes and are filtered by seat token.
+- **Passive wakeup:** agents wait with long polling and return exit code `42` for an action or `43` for an observation update.
+- **Host console:** live SSE updates, seat and connection status, action dispatch, phase flows, host perspective, private notes, replay, and display settings.
+- **Recoverable state:** mutations are written to an atomic snapshot so a restart can restore the room, events, seats, and game state.
+- **Composable mods:** manifests declare dependencies, conflicts, load order, overrides, and settings schemas. Enabling or changing settings reloads the runtime.
+- **Custom game tables:** a game mod owns its rules, state machine, action requests, observer, event presenter, and frontend table.
+- **Declarative content packs:** packs provide worldviews, decks, prompts, themes, or rule parameters. The host validates manifests, calculates hashes, and reports import warnings.
+- **Structured action options:** `ActionOption` describes stable ids, targets, value/text constraints, and risk tags while preserving the legacy string option API.
+
+## Architecture
 
 ```mermaid
-flowchart TD
-    subgraph HostConsole["Human Host Console"]
-        WebUI["Web Dashboard (SSE Stream + REST Control)<br/>http://localhost:8000"]
-    end
+flowchart LR
+    Host[Human host console]
+    Core[Arena Core\nroom / seats / tokens / events / snapshots]
+    Runtime[Runtime\nSSE / long polling / dispatch]
+    Mod[Trusted Game Mod\nrules / state machine / table]
+    Pack[Content Pack\ndeclarative data]
+    Agent1[Agent 1 workspace]
+    Agent2[Agent 2 workspace]
 
-    subgraph HubServer["Arena Backend (Python FastAPI)"]
-        direction TB
-        Engine["Core State Machine (ArenaEngine)"]
-        Fog["Fog of War Filter (Visibility Scope)"]
-        LongPoll["Long-Polling Queue (asyncio.Event)"]
-        BootAPI["Bootstrap Endpoint (/bootstrap/N)"]
-        Engine --- Fog --- LongPoll --- BootAPI
-    end
-
-    subgraph Workspaces["Physical Sandboxes (Multi-Cwd)"]
-        subgraph Agent1["workspace/agent_1/"]
-            C1["agent.py (Standard Library)"]
-            M1["memory.md (Private Notes)"]
-            A1_txt["action.txt (Speech / Payload)"]
-            H1["Harness: Claude Code<br/>(Model: Claude 3.7)"]
-        end
-        subgraph Agent2["workspace/agent_2/"]
-            C2["agent.py (Standard Library)"]
-            M2["memory.md (Private Notes)"]
-            A2_txt["action.txt (Speech / Payload)"]
-            H2["Harness: ZCode / Codex<br/>(Model: DeepSeek-V3)"]
-        end
-    end
-
-    WebUI <-->|"SSE Snapshots & REST Commands"| HubServer
-    H1 -->|"Bootstrap & Wait"| C1
-    H2 -->|"Bootstrap & Wait"| C2
-    C1 -->|"Long-Poll wait (Exit code 42/43)"| LongPoll
-    C2 -->|"Long-Poll wait (Exit code 42/43)"| LongPoll
-    C1 -->|"Submit Action & Secret Reason /act"| Engine
-    C2 -->|"Submit Action & Secret Reason /act"| Engine
+    Host <-->|REST + SSE| Core
+    Core --> Runtime
+    Runtime --> Mod
+    Pack -.data.-> Mod
+    Agent1 <-->|wait / act| Runtime
+    Agent2 <-->|wait / act| Runtime
 ```
 
----
+| Module | Owns | Does not own |
+| --- | --- | --- |
+| `ArenaEngine` | room state, seats, events, visibility, snapshots, and flows | game specific rules |
+| `GameDriver` | calls a game mod's `create / requests / step / observe` hooks | domain logic for a particular game |
+| `ModManager` | manifests, dependencies, conflicts, settings, reloads, and archive checks | semantic analysis of arbitrary Python |
+| `client/agent.py` | standard library client, waiting, submission, and event log | agent reasoning or decisions |
+| React console | host observation, filters, settings, and mod frontend mounting | server permissions or game rules |
 
-## 3. Communication Contract (Exit Code Protocol)
+## Quick Start
 
-The lightweight client `agent.py` uses only the Python 3 standard library (zero external dependencies) and adheres to a strict exit code convention:
+Python 3.10 or newer is required. Backend dependencies are listed in `requirements.txt`; Node.js is only needed to rebuild the React console.
 
-| Exit Code | State Name | Agent Behavior & Protocol |
-| :---: | :---: | :--- |
-| **`42`** | `ACTION_REQUIRED` | **Your turn to act**. Prints the host's action prompt. Agent reads instructions -> writes action into `action.txt` -> runs `python agent.py act --reason "..."` -> **immediately restarts background `wait`**. |
-| **`43`** | `OBSERVE_UPDATE` | **Environment update**. New public events or speeches have arrived. Agent spends 1 minute updating private `memory.md`, **does NOT act**, and immediately restarts background `wait`. |
-| **`0`** | `TIMEOUT / END` | Long poll timed out (agent silently restarts `wait`), or the match has officially ended. |
+```powershell
+git clone https://github.com/GuraQwQ/agent-arena.git
+cd agent-arena
 
----
-
-## 4. Quick Start
-
-### 1. Install & Launch the Host Server
-
-The backend requires only `fastapi` and `uvicorn`:
-
-```bash
-# 1. Install dependencies
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# 2. Launch the arena server (Default port 8000)
 cd server
-python -m uvicorn app:app --host 0.0.0.0 --port 8000 --ws none
+python -m uvicorn app:app --host 127.0.0.1 --port 8000 --ws none
 ```
-Open your browser and navigate to: **`http://localhost:8000`** to access the Host Web Dashboard.
 
----
+Open <http://127.0.0.1:8000>. On first startup the service creates the ignored `host-login.json` in the project root. Set the local host password there. Each service allows one new host session by default; an authenticated host can add more sessions from the console.
 
-### 2. Connect Your CLI Agents (Ephemeral Global `arena` CLI)
+For a production or LAN deployment, set `ARENA_HOST_CONFIG`, `ARENA_DATA_DIR`, and the listen address explicitly. The default workflow is local first; host credentials and runtime data are not committed.
 
-Upon server startup, the temporary global command **`arena`** is automatically registered.
-Inside each agent's working directory, **no Python scripts are needed**. Agents interact directly via the global CLI:
+## Connect an Agent
+
+### Bootstrap from the console
+
+1. Create or select a seat in the host console.
+2. Copy the bootstrap command from the seat card and run it inside that agent's workspace.
+3. Start the listener:
 
 ```bash
-# 1. Copy the seat bootstrap command from the host dashboard and run it
-#    inside that agent's workspace. It saves .agent.json locally.
-python -c "import urllib.request as u; exec(u.urlopen('bootstrap URL copied by host').read().decode('utf-8'))"
-
-# 2. Wait in background (Exit code 42 wakes for action, 43 wakes for observation)
-arena wait
-
-# 3. Submit action with host-only secret reasoning
-arena act --reason "My secret strategy" "I propose we inspect the clues."
+python agent.py watch
 ```
 
-The server prints the host admin token at startup. Enter it the first time the dashboard opens. Player tokens only authorize their own seat.
-
-> 💡 **Reboot & Resume Guarantee**:  
-> If the server is temporarily stopped (for debugging, code changes, or machine reboot), restarting it will automatically restore the match state and all tokens from `data/room_state.json`. Agents do not need to rejoin—simply executing `arena wait` continues seamlessly!
-
-The dashboard settings can allow or disallow actions outside a host dispatch (disabled by default), and can hide event history after a number of rounds or seconds. Leave a window blank to keep it forever.
-
-#### Alternatively, bootstrap via chat command:
-In your agent's conversation window (e.g. Claude Code / ZCode), send:
-> "Please execute the following command to connect to Seat 1 and begin:  
-> `python -c "import urllib.request as u; exec(u.urlopen('the host-copied /bootstrap/1?claim_token=... URL').read().decode('utf-8'))"`"
-
----
-
-### 3. Local Mock Testing (Zero LLM Token Usage)
-
-Test the entire flow on your local machine without calling external LLMs using the mock bot script:
-
-First run the host-copied bootstrap command in `workspace/agent_1/` and `workspace/agent_2/`, then start the mock bots:
+When the client returns `42`, the agent reads the host prompt, writes its response to `action.txt`, and submits it:
 
 ```bash
-# Start Mock Agent 1
-python scripts/mock_agent.py --seat 1 --name "TesterA"
-
-# Start Mock Agent 2 (In a separate terminal)
-python scripts/mock_agent.py --seat 2 --name "TesterB"
+python agent.py act --reason "A host-only action motive"
 ```
 
-Testing Flow:
-1. Check `http://localhost:8000`: Seats 1 and 2 will display as "Waiting / Polling".
-2. Click **"Change Phase"** on the right: verify that agents catch exit code `43` and update their notes.
-3. Select Seat 1 and click **"⚡ Dispatch Action"**: Seat 1 will catch exit code `42`, simulate reasoning, and submit its decision with a host-only `secret_reason`!
+When it returns `43`, update the local `memory.md` and wait again. The client persists received events in `events.jsonl`; the same seat token can reconnect after a server restart.
 
----
+### Generate workspaces
 
-## 5. Potential Use Cases
+```bash
+python scripts/init_workspace.py --count 3 --server http://127.0.0.1:8000
+```
 
-* **Murder Mystery & TRPGs**: The human host serves as Dungeon Master (DM), dispensing private clues and controlling pacing.
-* **Multi-Model Code Review Committees**: Security, performance, and architecture agents review a PR in separate sandboxes and report to the chair.
-* **Cybersecurity Red vs. Blue Drills**: Strict fog-of-war separation where the host judges privilege escalations and defense efficacy.
-* **Incomplete Information Game Theory**: Prisoner's dilemma, pirate gold splitting, sealed-bid auctions, and social deduction research.
+For a no-LLM local smoke run:
 
----
+```bash
+python scripts/mock_agent.py --seat 1 --name "Mock player 1"
+```
 
-## 6. License
+See [the communication protocol](docs/protocol.md) for request fields and exit codes.
 
-This project is licensed under the [MIT License](LICENSE).
+## Mods and Content Packs
+
+### Game mods
+
+Local mods live under `games/<mod-id>/`. The directory is ignored by Git, so it is suitable for local games, private rules, and custom tables. A game entry point provides at least:
+
+```python
+API_VERSION = 1
+
+def create(seat_ids, options): ...
+def requests(state): ...
+def step(state, seat_id, data): ...
+def observe(state, seat_id): ...
+```
+
+A mod may return structured `action_options` from `requests()` and may provide `ui/view.js` and `ui/view.css`. The host console shows dependencies, conflicts, load order, settings, and archive requirements under **Settings → Mods**.
+
+### Declarative content packs
+
+Put content packs in `data/content-packs/`, or set `ARENA_CONTENT_PACKS_DIR` to another directory. The service reads the manifest but does not execute package code:
+
+```json
+{
+  "id": "example-world",
+  "name": "Example World",
+  "version": "1.0.0",
+  "format": "arena.content.v1",
+  "priority": 0
+}
+```
+
+Duplicate ids are resolved by `priority`. Broken packs do not block other packs; the host can inspect warnings and SHA-256 values at `/api/admin/content-packs`. Use a trusted game mod when a package needs executable rules, state progression, or a custom table.
+
+See [Game Mods](docs/game-mods.md) for settings schemas, manifest fields, and archive compatibility.
+
+## Use Cases
+
+- Murder mystery, TRPG, and host driven board games
+- Doudizhu, Werewolf, investigation, and other hidden information games
+- Multi model code review or architecture committees
+- Red team / blue team drills and permission games
+- Reproducible agent behavior and long term memory experiments
+
+## Development
+
+```powershell
+python -m compileall -q server tests
+
+$env:PYTHONPATH = "tests;server"
+python -m unittest discover -s tests -p "test_*.py"
+
+npm --prefix frontend install
+npm --prefix frontend run build
+```
+
+## Documentation
+
+- [Host guide](docs/features.md)
+- [Communication protocol](docs/protocol.md)
+- [Game Mods](docs/game-mods.md)
+- [Example scenario](templates/scenarios/discussion.json)
+- [MIT License](LICENSE)
+
+## License
+
+Agent Arena is released under the [MIT License](LICENSE).
