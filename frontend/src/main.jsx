@@ -1,18 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { BlurText } from "./components/BlurText.jsx";
 import { request, jsonRequest, arenaApi } from "./api/arenaClient.js";
 import { useArenaSession } from "./state/useArenaSession.js";
-
-const EVENT_CATEGORIES = {
-  results: "结果与进程",
-  messages: "消息与发言",
-  memory: "记忆写入",
-  requests: "行动指令",
-  submissions: "原始提交",
-  system: "系统记录"
-};
+import { ACTION_NAMES, EVENT_CATEGORIES } from "./events/eventModel.js";
+import { EventItem, EventTimeline } from "./events/EventTimeline.jsx";
+import { createModFrontend } from "./mods/modFrontend.js";
 
 const DEFAULT_DISPLAY = {
   categories: ["results", "messages"],
@@ -28,8 +22,6 @@ const DEFAULT_DISPLAY = {
   reduceMotion: false
 };
 
-const ACTION_NAMES = { ACT: "行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "选择", NUMBER: "数值" };
-
 function clone(value) {
   return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
 }
@@ -43,57 +35,6 @@ function readDisplay() {
   }
 }
 
-function eventCategory(event) {
-  if (event.event_type === "MEMORY_UPDATE") return "memory";
-  if (["ACTION_REQUEST", "ACTION_CANCELLED"].includes(event.event_type)) return "requests";
-  if (["ACTION_SUBMIT"].includes(event.event_type)) return "submissions";
-  if (["CHAT", "PRIVATE_MESSAGE", "GROUP_MESSAGE", "ANNOUNCEMENT"].includes(event.event_type)) return "messages";
-  if (event.event_type.startsWith("GAME") || ["PHASE_CHANGE", "GAME_STARTED", "GAME_FINISHED", "GAME_STATUS", "GAME_RESULT"].includes(event.event_type)) return "results";
-  return "system";
-}
-
-function eventSeats(event) {
-  return [event.from_seat, event.to_seat, event.data?.seat, event.data?.target_seat].filter(value => value !== null && value !== undefined).map(String);
-}
-
-function eventDescription(event) {
-  const data = event.data || {};
-  const cardText = cards => (cards || []).map(card => ({ SJ: "小王", BJ: "大王" }[card] || card)).join("  ");
-  let title = String(event.title || event.event_type || "系统事件").replace(/【([^】]+)】/g, "$1 ").trim();
-  let text = typeof event.content === "string" ? event.content : event.content ? JSON.stringify(event.content) : "";
-  if (event.event_type === "ACTION_REQUEST") {
-    title = `等待 ${event.to_seat} 号位行动`;
-    text = `已派发${ACTION_NAMES[data.action_type] || data.action_type || "行动"}指令`;
-  } else if (event.event_type === "ACTION_SUBMIT") {
-    title = `${event.from_seat} 号位提交${ACTION_NAMES[data.action_type] || "行动"}`;
-    if (Array.isArray(data.cards)) text = `出牌 ${cardText(data.cards)}${data.cards.length} 张`;
-    if (!text) text = Object.hasOwn(data, "choice") ? `选择 ${data.choice}` : Object.hasOwn(data, "value") ? `提交数值 ${data.value}` : "已提交，展开原始详情查看内容";
-  } else if (event.event_type === "MEMORY_UPDATE") {
-    title = `${event.from_seat} 号位${data.baseline ? "的笔记快照" : "更新了笔记"}`;
-    const added = (data.changes || []).filter(line => line.kind === "added").map(line => line.text);
-    text = (added.length ? added : String(data.text || "").split("\n")).filter(line => line.trim() && !/^#{1,6}\s/.test(line)).slice(-3).join("\n") || (data.exists === false ? "记忆文件已移除" : "笔记为空");
-  } else if (event.event_type === "GAME_EVENT") {
-    if (Array.isArray(data.cards)) {
-      title = `${data.seat ?? event.from_seat ?? ""} 号位出${data.combination?.name || "牌"}`;
-      text = `${cardText(data.cards)}${data.remaining === undefined ? "" : ` · 余 ${data.remaining} 张`}`;
-    } else if (event.title?.includes("过牌")) {
-      title = `${data.seat ?? event.from_seat ?? ""} 号位过牌`;
-      text = "放弃跟牌，等待下一位行动";
-    }
-  }
-  return { title, text };
-}
-
-function formatTime(timestamp) {
-  if (!timestamp) return "--:--:--";
-  return new Date(timestamp * 1000).toLocaleTimeString([], { hour12: false });
-}
-
-function formatScope(scope, toSeat) {
-  const names = { PUBLIC: "全员公开", PRIVATE: "私信", GROUP: "阵营", HOST_ONLY: "仅主持人" };
-  return `${names[scope] || scope || "系统"}${scope === "PRIVATE" && toSeat ? ` · ${toSeat} 号位` : ""}`;
-}
-
 function App() {
   const arena = useArenaSession();
   const [display, setDisplay] = useState(readDisplay);
@@ -101,6 +42,7 @@ function App() {
   const [panel, setPanel] = useState(null);
   const [tab, setTab] = useState("events");
   const [perspectiveSnapshot, setPerspectiveSnapshot] = useState(null);
+  const [eventPresenter, setEventPresenter] = useState(null);
 
   const current = perspectiveSnapshot || arena.snapshot;
   const seats = current?.seats || {};
@@ -128,8 +70,8 @@ function App() {
       <SeatRail snapshot={current} onRefresh={() => request("/api/admin/snapshot").then(data => arena.showNotice(data ? "已刷新快照" : "刷新失败"))} onNotice={arena.showNotice} />
       <section className="workspace">
         <WorkspaceHeader current={current} tab={tab} setTab={setTab} />
-        {tab === "events" && <EventTimeline snapshot={current} display={display} setDisplay={setDisplay} />}
-        {tab === "game" && <GameStage snapshot={current} onNotice={arena.showNotice} />}
+        {tab === "events" && <EventTimeline snapshot={current} display={display} setDisplay={setDisplay} presenter={eventPresenter} />}
+        {tab === "game" && <GameStage snapshot={current} onNotice={arena.showNotice} onPresenter={setEventPresenter} />}
         {tab === "replay" && <ReplayPlaceholder onNotice={arena.showNotice} />}
       </section>
       {display.showMemories && <MemoryRail snapshot={current} />}
@@ -196,30 +138,6 @@ function SeatRail({ snapshot, onNotice }) {
   return <aside className="rail seat-rail"><div className="section-heading"><div><p className="eyebrow">ROOM ROSTER</p><h3>玩家 <span className="count">{seats.length}</span></h3></div><button className="text-button" onClick={() => open(null)}>+ 新增</button></div><p className="subtle rail-hint">连接状态、待办行动与模型席位。</p><div className="seat-list">{seats.map(seat => <article className="seat-card" key={seat.seat_id} onClick={() => open(seat)}><div className={`seat-avatar ${seat.connection_status?.toLowerCase() || "never"}`}>{seat.seat_id}</div><div className="seat-info"><strong>{seat.name}</strong><span>{seat.role || "未设置角色"}</span><div className="seat-status"><i className={seat.connection_status?.toLowerCase() || "never"} />{seat.connection_status === "LISTENING" ? "在线监听" : seat.connection_status === "RECENT" ? `${seat.seconds_since_seen || 0} 秒前活跃` : "等待连接"}</div></div>{snapshot?.active_actions?.[seat.seat_id] && <b className="action-dot">行动</b>}</article>)}</div>{editing && <div className="inline-editor"><div className="section-heading"><h4>{editing === "new" ? "新增席位" : `编辑 ${editing} 号位`}</h4><button className="icon-button" onClick={() => setEditing(null)} aria-label="关闭">×</button></div><form onSubmit={save}><label>席位号<input type="number" min="1" max="64" value={form.seat_id} onChange={event => setForm({ ...form, seat_id: Number(event.target.value) })} required /></label><label>名称<input value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} required /></label><label>角色<input value={form.role} onChange={event => setForm({ ...form, role: event.target.value })} /></label><label>阵营<input value={form.group_id} onChange={event => setForm({ ...form, group_id: event.target.value })} /></label><label>初始化提示<textarea rows="3" value={form.init_prompt} onChange={event => setForm({ ...form, init_prompt: event.target.value })} /></label><button className="button button-primary button-wide">保存席位</button></form></div>}</aside>;
 }
 
-function EventTimeline({ snapshot, display, setDisplay }) {
-  const events = useMemo(() => (snapshot?.events || []).filter(event => {
-    if (!display.categories.includes(eventCategory(event)) || !display.scopes.includes(event.scope)) return false;
-    if (display.seat && !eventSeats(event).includes(String(display.seat))) return false;
-    const query = display.query.trim().toLocaleLowerCase();
-    return !query || [event.title, event.content, event.secret_reason, JSON.stringify(event.data || {})].join("\n").toLocaleLowerCase().includes(query);
-  }), [snapshot?.events, display]);
-  const scrollRef = useRef(null);
-  useEffect(() => { if (display.autoScroll && scrollRef.current) scrollRef.current.scrollTop = 0; }, [events.length, display.autoScroll]);
-  const seats = Object.values(snapshot?.seats || {});
-  return <div className="timeline-view">
-    <div className="feed-toolbar"><div className="search-box"><span>⌕</span><input value={display.query} onChange={event => setDisplay({ ...display, query: event.target.value })} placeholder="搜索事件、发言或笔记…" /></div><select value={display.seat} onChange={event => setDisplay({ ...display, seat: event.target.value })}><option value="">全部席位</option>{seats.map(seat => <option key={seat.seat_id} value={seat.seat_id}>{seat.seat_id} 号 · {seat.name}</option>)}</select><span className="event-count">{events.length} 条</span><label className="toggle-label"><input type="checkbox" checked={display.autoScroll} onChange={event => setDisplay({ ...display, autoScroll: event.target.checked })} />跟随最新</label></div>
-    <div className="timeline" ref={scrollRef}>{events.length ? [...events].reverse().map(event => <EventItem event={event} key={event.seq} />) : <div className="empty-state"><span>◌</span><strong>暂无匹配事件</strong><p>新的行动、消息和笔记会出现在这里。</p></div>}</div>
-  </div>;
-}
-
-function EventItem({ event }) {
-  const [open, setOpen] = useState(false);
-  const desc = eventDescription(event);
-  const category = eventCategory(event);
-  const actor = event.from_seat ?? event.data?.seat ?? event.to_seat;
-  return <article className={`event-item event-${category}`}><div className="event-avatar">{actor ?? (category === "memory" ? "记" : "A")}</div><div className="event-content"><div className="event-head"><div><strong>{desc.title}</strong><div className="event-meta"><span>{EVENT_CATEGORIES[category]}</span><span>{formatScope(event.scope, event.to_seat)}</span><span>#{event.seq}</span></div></div><time>{formatTime(event.timestamp)}</time></div>{desc.text && <p className="event-text">{desc.text}</p>}{category === "memory" && event.data?.text && <details className="memory-preview"><summary>本次 memory.md 写入</summary><pre>{event.data.text}</pre></details>}<details className="raw-detail" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary>原始详情</summary><pre>{JSON.stringify(event, null, 2)}</pre></details></div></article>;
-}
-
 function MemoryRail({ snapshot }) {
   const memories = snapshot?.memories || {};
   const seats = snapshot?.seats || {};
@@ -227,15 +145,18 @@ function MemoryRail({ snapshot }) {
   return <aside className="rail memory-rail"><div className="section-heading"><div><p className="eyebrow">PRIVATE NOTES</p><h3>玩家笔记</h3></div><span className="live-label">LIVE</span></div><p className="subtle rail-hint">默认展示最近一次 memory.md 写入内容。</p><div className="memory-list">{seatIds.map(id => { const note = memories[id]; const status = snapshot?.memory_status?.[id]; return <article className="memory-card" key={id}><header><div className="memory-avatar">{id}</div><div><strong>{seats[id].name}</strong><span>{note ? note.baseline ? "首次采集" : "最新变更" : "等待写入"}</span></div>{note && <i className="memory-pulse" />}</header>{note ? <><p className="memory-time">{new Date((note.written_at || note.observed_at || 0) * 1000).toLocaleString()}</p><div className="memory-diff">{(note.changes || []).length ? note.changes.slice(-4).map((line, index) => <div className={`memory-line ${line.kind}`} key={`${line.kind}-${index}`}><b>{line.kind === "added" ? "+" : line.kind === "removed" ? "−" : "·"}</b>{line.text}</div>) : <span>{note.text || "文件为空"}</span>}</div><details><summary>查看全文</summary><pre>{note.text || ""}</pre></details></> : <p className="subtle">{status?.path ? "等待下一次写入" : "尚未登记工作目录"}</p>}</article>; })}</div></aside>;
 }
 
-function GameStage({ snapshot, onNotice }) {
+function GameStage({ snapshot, onNotice, onPresenter }) {
   const container = useRef(null);
   const view = useRef(null);
+  const bridge = useRef(null);
   const stylesheet = useRef(null);
   const [frontend, setFrontend] = useState(null);
   const gameKey = snapshot?.game ? `${snapshot.game.id}:${snapshot.game.name}:${snapshot.game.version}` : null;
-  useEffect(() => { let active = true; if (!gameKey) { container.current?.replaceChildren(); view.current = null; stylesheet.current?.remove(); stylesheet.current = null; setFrontend(null); return undefined; } request("/api/admin/game/frontend").then(data => { if (active) setFrontend(data.frontend); }).catch(error => onNotice(error.message, true)); return () => { active = false; view.current?.destroy?.(); view.current = null; stylesheet.current?.remove(); stylesheet.current = null; }; }, [gameKey, onNotice]);
-  useEffect(() => { let active = true; if (!frontend?.module || !container.current) return undefined; if (frontend.stylesheet) { stylesheet.current?.remove(); stylesheet.current = document.createElement("link"); stylesheet.current.rel = "stylesheet"; stylesheet.current.href = frontend.stylesheet; document.head.appendChild(stylesheet.current); } import(/* @vite-ignore */ frontend.module).then(module => { if (!active) return; container.current.replaceChildren(); view.current = module.mount?.(container.current, { adminRequest: (url, body, method = "POST") => jsonRequest(url, body, method), showNotice: onNotice }); view.current?.update?.({ state: snapshot.game?.state, status: snapshot.game?.status, perspective: snapshot.perspective_seat ?? null, seats: snapshot.seats, mod_settings: snapshot.mod_settings?.[snapshot.game?.name] || {} }); }).catch(error => onNotice(`游戏界面加载失败：${error.message}`, true)); return () => { active = false; view.current?.destroy?.(); }; }, [frontend, gameKey, onNotice]);
-  useEffect(() => { if (!view.current || !snapshot?.game) return; view.current.update?.({ state: snapshot.game.state, status: snapshot.game.status, perspective: snapshot.perspective_seat ?? null, seats: snapshot.seats, mod_settings: snapshot.mod_settings?.[snapshot.game.name] || {} }); }, [snapshot]);
+  const payload = { state: snapshot?.game?.state, status: snapshot?.game?.status, perspective: snapshot?.perspective_seat ?? null, seats: snapshot?.seats, mod_settings: snapshot?.mod_settings?.[snapshot?.game?.name] || {} };
+  useEffect(() => { if (!container.current) return; bridge.current = createModFrontend({ onNotice, onPresenter, container: container.current, stylesheetRef: stylesheet }); return () => { bridge.current?.destroy(); }; }, [onNotice, onPresenter]);
+  useEffect(() => { let active = true; if (!gameKey) { setFrontend(null); bridge.current?.destroy(); return undefined; } arenaApi.gameFrontend().then(data => { if (active) setFrontend(data.frontend); }).catch(error => onNotice(error.message, true)); return () => { active = false; bridge.current?.destroy(); }; }, [gameKey, onNotice]);
+  useEffect(() => { if (!frontend?.module || !bridge.current) return; bridge.current.mount(frontend, { ...payload, adminRequest: (url, body, method = "POST") => jsonRequest(url, body, method) }); }, [frontend, gameKey]);
+  useEffect(() => { bridge.current?.update(payload); }, [snapshot]);
   return <div className="game-stage"><div className="stage-bar"><div><p className="eyebrow">GAME VIEW</p><strong>{snapshot?.game ? `${snapshot.game.name} · ${snapshot.game.status}` : "尚未加载游戏"}</strong></div>{snapshot?.game && <div className="stage-actions"><button className="button button-quiet" onClick={() => jsonRequest("/api/admin/game/pause", {}).catch(error => onNotice(error.message, true))}>暂停</button><button className="button button-primary" onClick={() => jsonRequest("/api/admin/game/resume", {}).catch(error => onNotice(error.message, true))}>继续</button></div>}</div><div ref={container} className="game-container">{!snapshot?.game && <div className="empty-state"><span>◇</span><strong>游戏桌面尚未启动</strong><p>启用游戏 Mod 后从控制台启动一局。</p></div>}{snapshot?.game && !frontend && <div className="loading-state">正在加载游戏界面…</div>}</div></div>;
 }
 
@@ -280,19 +201,47 @@ function DirectorSettings({ snapshot, onNotice }) {
 function ModSettings({ onNotice }) {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
-  const refresh = useCallback(() => request("/api/admin/mods").then(setStatus).catch(error => onNotice(error.message, true)), [onNotice]);
+  const [phase, setPhase] = useState("idle");
+  const [filter, setFilter] = useState("all");
+  const refresh = useCallback(async () => {
+    setPhase("checking");
+    try { setStatus(await arenaApi.mods()); setPhase("ready"); }
+    catch (error) { setPhase("error"); onNotice(error.message, true); }
+  }, [onNotice]);
   useEffect(() => { refresh(); }, [refresh]);
-  const toggle = async (id, checked) => { if (busy) return; setBusy(true); try { const data = await jsonRequest("/api/admin/mods", { enabled: checked ? [...status.enabled, id] : status.enabled.filter(item => item !== id) }); setStatus(data); onNotice("Mod 已重载"); } catch (error) { onNotice(error.message, true); } finally { setBusy(false); } };
-  const saveSettings = async (item, values) => { try { setStatus(await jsonRequest(`/api/admin/mods/${encodeURIComponent(item.id)}/settings`, { values }, "PUT")); onNotice(`${item.name} 设置已保存并重载`); } catch (error) { onNotice(error.message, true); } };
+  const toggle = async (id, checked) => {
+    if (busy) return;
+    setBusy(true); setPhase("reloading");
+    try { setStatus(await arenaApi.applyMods(checked ? [...status.enabled, id] : status.enabled.filter(item => item !== id))); setPhase("ready"); onNotice("Mod 已重载"); }
+    catch (error) { setPhase("error"); onNotice(error.message, true); await refresh(); }
+    finally { setBusy(false); }
+  };
+  const reloadEnabled = async () => {
+    if (busy) return;
+    setBusy(true); setPhase("reloading");
+    try { setStatus(await arenaApi.applyMods(status.enabled)); setPhase("ready"); onNotice("已重载启用的 Mod"); }
+    catch (error) { setPhase("error"); onNotice(error.message, true); }
+    finally { setBusy(false); }
+  };
+  const saveSettings = async (item, values) => {
+    setBusy(true); setPhase("reloading");
+    try { setStatus(await arenaApi.modSettings(item.id, values)); setPhase("ready"); onNotice(`${item.name} 设置已保存并重载`); }
+    catch (error) { setPhase("error"); onNotice(error.message, true); }
+    finally { setBusy(false); }
+  };
   if (!status) return <div className="settings-content"><div className="loading-state">正在读取 Mod 清单…</div></div>;
-  return <div className="settings-content"><SettingsSection title="运行状态"><div className="settings-actions"><button className="button button-quiet" onClick={refresh}>刷新列表</button><button className="button button-quiet" onClick={() => jsonRequest("/api/admin/mods", { enabled: status.enabled }).then(setStatus).catch(error => onNotice(error.message, true))}>重载已启用</button></div></SettingsSection>{status.issues?.length > 0 && <div className="issue-list">{status.issues.map((issue, index) => <div className={`issue ${issue.severity || "error"}`} key={`${issue.code}-${index}`}><strong>{issue.message}</strong><span>{issue.mods?.join("、")}{issue.resource ? ` · ${issue.resource}` : ""}</span></div>)}</div>}<SettingsSection title="已发现的 Mod"><div className="mod-list">{status.mods.map(mod => <ModCard key={mod.id} mod={mod} status={status} busy={busy} onToggle={toggle} onSave={saveSettings} />)}</div></SettingsSection><SettingsSection title="加载顺序"><ol className="load-order">{(status.order || []).map(id => <li key={id}>{id}</li>)}</ol></SettingsSection></div>;
+  const visibleMods = status.mods.filter(mod => filter === "all" || filter === "enabled" && status.enabled.includes(mod.id) || filter === "issues" && (mod.error || status.issues?.some(issue => issue.mods?.includes(mod.id))) || filter === "disabled" && !status.enabled.includes(mod.id));
+  const phaseLabel = { checking: "检查依赖…", reloading: "重载运行期…", error: "需要处理", ready: "运行期已同步", idle: "" }[phase];
+  return <div className="settings-content"><SettingsSection title="运行状态"><div className="settings-actions"><button className="button button-quiet" onClick={refresh} disabled={busy}>刷新列表</button><button className="button button-quiet" onClick={reloadEnabled} disabled={busy}>重载已启用</button><span className={`mod-phase mod-phase-${phase}`} role="status">{phaseLabel}</span></div><div className="mod-filters" role="group" aria-label="Mod 状态筛选">{[["all", "全部"], ["enabled", "已启用"], ["disabled", "未启用"], ["issues", "有问题"]].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}</div></SettingsSection>{status.issues?.length > 0 && <div className="issue-list" aria-live="polite">{status.issues.map((issue, index) => <div className={`issue ${issue.severity || "error"}`} key={`${issue.code}-${index}`}><strong>{issue.message}</strong><span>{issue.mods?.join("、")}{issue.resource ? ` · ${issue.resource}` : ""}</span></div>)}</div>}<SettingsSection title="已发现的 Mod"><div className="mod-list">{visibleMods.length ? visibleMods.map(mod => <ModCard key={mod.id} mod={mod} status={status} busy={busy} onToggle={toggle} onSave={saveSettings} />) : <p className="subtle">当前筛选没有 Mod。</p>}</div></SettingsSection><SettingsSection title="加载顺序"><ol className="load-order">{(status.order || []).map(id => <li key={id}>{id}</li>)}</ol></SettingsSection></div>;
 }
 
 function ModCard({ mod, status, busy, onToggle, onSave }) {
   const item = status.settings?.find(setting => setting.id === mod.id);
   const [values, setValues] = useState(item?.values || {});
   useEffect(() => setValues(item?.values || {}), [item]);
-  return <article className="mod-card"><header><div><strong>{mod.name}</strong><span>{mod.version || "配置错误"} · {mod.type === "game" ? "游戏" : "扩展"}</span></div><label className="switch"><input type="checkbox" checked={status.enabled.includes(mod.id)} disabled={busy || !!mod.error} onChange={event => onToggle(mod.id, event.target.checked)} /><i /></label></header><p>{mod.description || mod.error || ""}</p><details><summary>依赖与覆盖项</summary><p>编号：{mod.id}</p><p>依赖：{Object.entries(mod.dependencies || {}).map(([id, version]) => `${id} ${version || "任意版本"}`).join("、") || "未声明"}</p><p>覆盖：{(mod.overrides || []).join("、") || "未声明"}</p></details>{item && <div className="mod-form">{Object.entries(item.schema).map(([key, schema]) => <SettingField key={key} name={key} schema={schema} value={values[key]} onChange={value => setValues({ ...values, [key]: value })} />)}<button className="button button-primary button-wide" onClick={() => onSave(item, values)}>保存 Mod 设置</button></div>}</article>;
+  const dirty = item && JSON.stringify(values) !== JSON.stringify(item.values);
+  const invalid = item && Object.entries(item.schema).some(([key, schema]) => { const value = values[key]; return (schema.type === "integer" && !Number.isInteger(value)) || (schema.type === "number" && !Number.isFinite(value)) || (schema.min !== undefined && value < schema.min) || (schema.max !== undefined && value > schema.max); });
+  return <article className="mod-card"><header><div><strong>{mod.name}</strong><span>{mod.version || "配置错误"} · {mod.type === "game" ? "游戏" : "扩展"}</span></div><label className="switch"><input type="checkbox" checked={status.enabled.includes(mod.id)} disabled={busy || !!mod.error} onChange={event => onToggle(mod.id, event.target.checked)} /><i /></label></header><p>{mod.description || mod.error || ""}</p><details><summary>依赖与覆盖项</summary><p>编号：{mod.id}</p><p>依赖：{Object.entries(mod.dependencies || {}).map(([id, version]) => `${id} ${version || "任意版本"}`).join("、") || "未声明"}</p><p>覆盖：{(mod.overrides || []).join("、") || "未声明"}</p></details>{item && <div className="mod-form">{Object.entries(item.schema).map(([key, schema]) => <SettingField key={key} name={key} schema={schema} value={values[key]} onChange={value => setValues({ ...values, [key]: value })} />)}<div className="mod-form-actions"><button className="button button-primary" disabled={!dirty || invalid || busy} onClick={() => onSave(item, values)}>保存 Mod 设置</button>{dirty && <button className="button button-quiet" disabled={busy} onClick={() => setValues(item.values)}>撤销修改</button>}{!dirty && <span className="field-state">已同步</span>}{invalid && <span className="field-state field-state-error">请修正设置值</span>}</div></div>}</article>;
 }
 
 function SettingField({ name, schema, value, onChange }) {
