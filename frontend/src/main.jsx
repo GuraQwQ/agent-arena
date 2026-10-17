@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { BlurText } from "./components/BlurText.jsx";
+import { request, jsonRequest, arenaApi } from "./api/arenaClient.js";
+import { useArenaSession } from "./state/useArenaSession.js";
 
 const EVENT_CATEGORIES = {
   results: "结果与进程",
@@ -30,22 +32,6 @@ const ACTION_NAMES = { ACT: "行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "
 
 function clone(value) {
   return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
-}
-
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: "same-origin", ...options });
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = data?.detail;
-    const error = new Error(typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : `请求失败 (${response.status})`);
-    error.issues = data?.issues;
-    throw error;
-  }
-  return data;
-}
-
-function jsonRequest(url, body, method = "POST") {
-  return request(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
 function readDisplay() {
@@ -108,72 +94,8 @@ function formatScope(scope, toSeat) {
   return `${names[scope] || scope || "系统"}${scope === "PRIVATE" && toSeat ? ` · ${toSeat} 号位` : ""}`;
 }
 
-function useArena() {
-  const [access, setAccess] = useState(null);
-  const [snapshot, setSnapshot] = useState(null);
-  const [connected, setConnected] = useState(false);
-  const [notice, setNotice] = useState(null);
-  const source = useRef(null);
-  const showNotice = useCallback((message, error = false) => {
-    setNotice({ message, error });
-    window.setTimeout(() => setNotice(current => current?.message === message ? null : current), 4200);
-  }, []);
-
-  const refreshAccess = useCallback(async () => {
-    const data = await request("/api/host/access");
-    setAccess(data);
-    return data;
-  }, []);
-
-  const closeStream = useCallback(() => {
-    source.current?.close();
-    source.current = null;
-    setConnected(false);
-  }, []);
-
-  const connect = useCallback(() => {
-    closeStream();
-    const stream = new EventSource("/api/admin/stream");
-    source.current = stream;
-    stream.onopen = () => setConnected(true);
-    stream.onmessage = event => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.type === "SNAPSHOT") setSnapshot(payload.data);
-        if (payload.type === "HOST_ACCESS") setAccess(current => ({ ...current, ...payload.data }));
-        if (payload.type === "MOD_RELOAD") window.location.reload();
-      } catch {
-        showNotice("实时消息解析失败", true);
-      }
-    };
-    stream.onerror = async () => {
-      setConnected(false);
-      try {
-        const current = await refreshAccess();
-        if (!current.authenticated) closeStream();
-      } catch {
-        // EventSource 会继续自动重连。
-      }
-    };
-  }, [closeStream, refreshAccess, showNotice]);
-
-  useEffect(() => {
-    refreshAccess().then(current => current.authenticated && connect()).catch(error => showNotice(error.message, true));
-    return closeStream;
-  }, [closeStream, connect, refreshAccess, showNotice]);
-
-  const join = useCallback(async password => {
-    const data = await jsonRequest("/api/admin/session", { password });
-    setAccess({ ...data, authenticated: true });
-    connect();
-    return data;
-  }, [connect]);
-
-  return { access, snapshot, connected, notice, showNotice, refreshAccess, join };
-}
-
 function App() {
-  const arena = useArena();
+  const arena = useArenaSession();
   const [display, setDisplay] = useState(readDisplay);
   const [perspective, setPerspective] = useState(null);
   const [panel, setPanel] = useState(null);
@@ -195,7 +117,7 @@ function App() {
   useEffect(() => {
     setPerspectiveSnapshot(null);
     if (perspective === null || !arena.snapshot) return;
-    request(`/api/admin/perspective?seat_id=${perspective}`).then(setPerspectiveSnapshot).catch(error => arena.showNotice(error.message, true));
+    arenaApi.perspective(perspective).then(setPerspectiveSnapshot).catch(error => arena.showNotice(error.message, true));
   }, [arena.snapshot, perspective]);
 
   if (!arena.access?.authenticated) return <HostLogin access={arena.access} onJoin={arena.join} onRefresh={arena.refreshAccess} notice={arena.notice} />;
