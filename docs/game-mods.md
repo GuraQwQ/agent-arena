@@ -18,6 +18,14 @@ Mod 执行的是主持人信任的本机 Python。声明和运行期检查无法
 
 ## 清单与目录
 
+除了可执行 Mod，声明式内容包可放在 `data/content-packs/`（也可用 `ARENA_CONTENT_PACKS_DIR` 指定目录）。服务端只读取 `manifest.json`，不执行包内文件；坏包会记录警告并跳过。清单至少包含：
+
+```json
+{"id":"example-world","name":"示例世界","version":"1.0.0","format":"arena.content.v1","priority":0}
+```
+
+同一 `id` 按 `priority` 选择，结果带有来源路径和 SHA-256。主持接口 `GET /api/admin/content-packs` 可用于 Mod 管理器展示导入结果。内容包适合放世界观、牌组、提示词、主题和规则参数；需要执行 Python 规则的内容仍应使用可信游戏 Mod。
+
 每个 Mod 使用一份 `mod.json` 作为版本来源：
 
 ```text
@@ -57,6 +65,10 @@ Mod 运行时可声明 `configure(settings, context)` 接收变更后的命名�
 
 ## 规则与底层扩展
 
+### 通用行动选项
+
+游戏或扩展可以在 `requests()` 返回 `action_options`，每项包含稳定 `option_id`、`text`、`value`、`targets`、`value_schema`、`text_schema` 和 `risk_tags`。宿主会把它保存在 `ActionRequest.action_options`，旧的 `options: string[]` 继续有效。该协议只描述候选动作，最终规则校验仍由 Mod 的 `step()` 完成。
+
 游戏入口提供：
 
 | 接口 | 职责 |
@@ -94,6 +106,9 @@ Mod 运行时可声明 `configure(settings, context)` 接收变更后的命名�
 ## 接口
 
 - `GET /api/admin/mods`：目录、启用状态、顺序、版本、诊断。
+- `GET /api/admin/content-packs`：扫描声明式内容包，返回包清单、哈希和导入警告。
+- `GET /api/admin/summary`、`GET /api/admin/runtime`：分别返回轻量房间摘要和脱敏运行快照。
+- `GET /api/admin/events?since_seq=0&limit=100`：按序号分页读取规范化事件，适合高频观察者。
 - `POST /api/admin/mods/validate`、`POST /api/admin/mods`：`{"enabled":["某模块"]}`，检查或立即应用组合。
 - `GET /api/admin/archives/{room_id}/mods`：检查存档所需组合。
 - `POST /api/admin/archives/{room_id}/restore`：备份当前对局并恢复。

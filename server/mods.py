@@ -35,10 +35,16 @@ def read_manifest(root, mod_id):
     if not isinstance(data.get("version"), str):
         raise ValueError("Mod version 应为版本字符串")
     Version(data["version"])
-    data = {"name": mod_id, "description": "", "dependencies": {}, "conflicts": [], "overrides": [], "after": [], "sources": [], "frontend": {}, **data}
+    data = {"name": mod_id, "description": "", "dependencies": {}, "conflicts": [], "overrides": [], "after": [], "sources": [], "frontend": {}, "api_version": 1, "kind": data.get("type"), "capabilities": [], "settings_schema": data.get("settings", {}), **data}
     data.setdefault("entry", "game.py" if data["type"] == "game" else "mod.py")
     if not all(isinstance(data[key], str) for key in ("name", "description", "entry")):
         raise ValueError("name、description 和 entry 应为字符串")
+    if isinstance(data["api_version"], bool) or not isinstance(data["api_version"], (int, str)):
+        raise ValueError("api_version 应为整数或版本字符串")
+    if not isinstance(data["kind"], str) or not data["kind"]:
+        raise ValueError("kind 应为非空字符串")
+    if not isinstance(data["capabilities"], list) or not all(isinstance(value, str) for value in data["capabilities"]):
+        raise ValueError("capabilities 应为字符串列表")
     for field in ("conflicts", "overrides", "after", "sources"):
         if not isinstance(data[field], list) or not all(isinstance(value, str) for value in data[field]):
             raise ValueError(f"{field} 应为字符串列表")
@@ -50,7 +56,8 @@ def read_manifest(root, mod_id):
         SpecifierSet(version)
     if not isinstance(data["frontend"], dict) or any(key not in {"module", "stylesheet"} or not isinstance(value, str) for key, value in data["frontend"].items()):
         raise ValueError("frontend 仅包含 module 和 stylesheet 文件路径")
-    data["settings"] = normalize_schema(data.get("settings", {}))
+    data["settings_schema"] = normalize_schema(data.get("settings_schema", data.get("settings", {})))
+    data["settings"] = normalize_schema(data.get("settings", data["settings_schema"]))
     digest = hashlib.sha256()
     rules = {key: data[key] for key in ("id", "version", "type", "entry", "dependencies", "conflicts", "overrides", "sources")}
     digest.update(json.dumps(rules, sort_keys=True, ensure_ascii=False).encode("utf-8"))
@@ -165,6 +172,8 @@ class ModManager:
             if mod is None or mod.get("error"):
                 issue("missing", f"{mod_id}：{mod.get('error') if mod else '本机未安装'}", [mod_id])
                 continue
+            if str(mod.get("api_version", 1)) != "1":
+                issue("api_version", f"{mod_id} 需要不兼容的 Mod API 版本 {mod.get('api_version')}，当前服务支持 1", [mod_id])
             graph[mod_id] = set()
             for dependency, requirement in mod["dependencies"].items():
                 target = catalog.get(dependency)
