@@ -11,8 +11,9 @@ export const ACTION_NAMES = { ACT: "行动", SPEAK: "发言", VOTE: "投票", CH
 
 export function categoryOf(event) {
   if (event.event_type === "MEMORY_UPDATE") return "memory";
-  if (["ACTION_REQUEST", "ACTION_CANCELLED"].includes(event.event_type)) return "requests";
-  if (event.event_type === "ACTION_SUBMIT") return "submissions";
+  if (["ACTION_REQUEST", "ACTION_CANCELLED"].includes(event.event_type)
+    || (event.event_type === "PRIVATE_MESSAGE" && event.from_seat == null)) return "requests";
+  if (event.event_type === "ACTION_SUBMIT") return event.data?.action_type === "SPEAK" ? "messages" : "submissions";
   if (["CHAT", "PRIVATE_MESSAGE", "GROUP_MESSAGE", "ANNOUNCEMENT"].includes(event.event_type)) return "messages";
   if (event.event_type.startsWith("GAME") || ["PHASE_CHANGE", "GAME_STARTED", "GAME_FINISHED", "GAME_STATUS", "GAME_RESULT"].includes(event.event_type)) return "results";
   return "system";

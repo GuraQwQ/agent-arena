@@ -71,13 +71,15 @@ def _scope(event: Mapping[str, Any]) -> str:
     return str(value.value if isinstance(value, Enum) else value)
 
 
-def _category(event_type: str) -> str:
+def _category(event_type: str, event: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
     if event_type == "MEMORY_UPDATE":
         return "memory"
-    if event_type in {"ACTION_REQUEST", "ACTION_CANCELLED"}:
+    if event_type in {"ACTION_REQUEST", "ACTION_CANCELLED"} or (
+        event_type == "PRIVATE_MESSAGE" and event.get("from_seat") is None
+    ):
         return "requests"
     if event_type == "ACTION_SUBMIT":
-        return "submissions"
+        return "messages" if payload.get("action_type") == "SPEAK" else "submissions"
     if event_type in _MESSAGE_TYPES:
         return "messages"
     if event_type.startswith("GAME") or event_type in _RESULT_TYPES:
@@ -213,7 +215,7 @@ def normalize_event(event: Any, include_raw: bool = False) -> EventEnvelope:
         host_text=host_text,
         payload=payload,
         importance=_importance(source, event_type),
-        category=_text(source.get("category", _category(event_type))),
+        category=_text(source.get("category", _category(event_type, source, payload))),
         state_delta=delta,
         no_state_changed=no_state_changed,
         secret_reason=_text(secret_reason) if secret_reason is not None else None,

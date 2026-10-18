@@ -1,0 +1,25 @@
+.memory-list { display: grid; gap: 10px; }
+.memory-card { min-width: 0; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
+.memory-card header { display: flex; align-items: center; gap: 8px; }
+.memory-card header > div { min-width: 0; }
+.memory-card header strong, .memory-card header > div > span { display: block; }
+.memory-card header strong { font-size: 12px; }
+.memory-card header > div > span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.memory-time { margin: 10px 0; color: var(--muted); font-size: 10px; }
+.memory-diff { color: var(--text); }
+.memory-card .memory-revision { margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.memory-card header .agent-avatar { display: inline-grid; }
+.memory-view-switch { display: flex; gap: 4px; margin: 12px 0; }
+.memory-view-switch button { padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; }
+.memory-view-switch button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.memory-note { max-height: 360px; overflow: auto; scrollbar-gutter: stable; padding: 0 4px 8px 0; }
+.memory-document h5 { margin: 14px 0 8px; color: var(--text); font-size: 12px; line-height: 1.5; }
+.memory-document h5:first-child { margin-top: 0; }
+.memory-paragraph { color: var(--text); font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-panel .memory-diff { max-height: 360px; overflow: auto; scrollbar-gutter: stable; }
+.memory-panel .memory-line { display: grid; grid-template-columns: 34px 10px minmax(0, 1fr); gap: 5px; padding: 5px 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.memory-line-number { color: var(--muted); font-size: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.memory-panel .memory-line.added { color: var(--success); }
+.memory-panel .memory-line.removed { color: var(--danger); }
+.memory-action-state { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.memory-read-error { font-size: 12px; line-height: 1.6; color: var(--danger); }

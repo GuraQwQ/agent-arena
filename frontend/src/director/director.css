@@ -1,0 +1,34 @@
+.workspace-tools { display: grid; justify-items: end; gap: 12px; }
+.host-tools { display: flex; gap: 8px; }
+.memory-toggle { display: none; }
+.director-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; }
+.inspector-rail { border-right: 0; border-left: 1px solid var(--line); padding: 0 0 0 18px; }
+.inspector-tabs { display: flex; gap: 4px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.inspector-tabs button { flex: 1; padding: 10px 4px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; }
+.inspector-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); font-weight: 700; }
+.inspector-tabs .inspector-close { flex: 0 0 32px; }
+.director-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
+.director-heading p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.director-section { margin-bottom: 24px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.director-section h4 { margin: 0 0 16px; font-size: 13px; }
+.director-section form { display: grid; gap: 8px; }
+.director-section form label { margin-top: 8px; }
+.director-section form label:first-child { margin-top: 0; }
+.director-section .button { margin-top: 8px; }
+.director-pending { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.app-shell:not(:has(.inspector-rail)) { grid-template-columns: 250px minmax(0, 1fr); }
+@media (max-width: 1180px) {
+  .inspector-rail { display: none; }
+  .memory-toggle { display: inline-flex; }
+  .app-shell:has(.inspector-rail.is-open) { grid-template-columns: minmax(0, 1fr) 320px; }
+  .app-shell:has(.inspector-rail.is-open) > .seat-rail { display: none; }
+  .inspector-rail.is-open { display: block; }
+  .app-shell:not(:has(.inspector-rail)) { grid-template-columns: 215px minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .workspace-tools { width: 100%; justify-items: stretch; }
+  .workspace-tools .view-tabs { width: 100%; }
+  .host-tools > button { flex: 1; }
+  .director-toggle { justify-content: center; }
+  .inspector-rail.is-open { position: fixed; inset: 76px 12px 12px auto; z-index: 12; width: min(360px, calc(100vw - 24px)); padding: 18px; overflow: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+}

@@ -17,6 +17,17 @@ from observer import (
 
 
 class ObserverTest(unittest.TestCase):
+    def test_instructions_and_speeches_have_distinct_categories(self):
+        cases = [
+            ({"event_type": "PRIVATE_MESSAGE", "from_seat": None}, "requests"),
+            ({"event_type": "PRIVATE_MESSAGE", "from_seat": 1}, "messages"),
+            ({"event_type": "ACTION_SUBMIT", "data": {"action_type": "SPEAK"}}, "messages"),
+            ({"event_type": "ACTION_SUBMIT", "data": {"action_type": "ACT"}}, "submissions"),
+        ]
+        for event, expected in cases:
+            with self.subTest(event=event):
+                self.assertEqual(normalize_event(event).category, expected)
+
     def test_normalize_existing_event_and_layer_text(self):
         event = Event(
             seq=3,
