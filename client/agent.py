@@ -6,7 +6,7 @@
 退出码规范:
   0 : 成功 / 超时无事
   42: 轮到你正式行动 (ACTION_REQUIRED) -> 打印主持人指引并唤醒 Agent
-  43: 观察更新 (OBSERVE_UPDATE) -> 收到新动态，简要更新 memory.md 并立即重启 wait
+  43: 观察更新 (OBSERVE_UPDATE) -> 判断或记忆变化时更新 memory.md，再重启 watch
   1 : 业务拒绝或参数错误
   2 : 无法连接服务器
 """
@@ -213,7 +213,7 @@ def receive_update(timeout: int):
         print("-" * 60)
         print("⚡ 行动方式:")
         print("  1. 将你的陈词/决策写入本地 action.txt")
-        print("  2. 执行提交: python agent.py act --reason \"仅主持人可见的深层动机\"")
+        print("  2. 更新 memory.md 中的当前判断与下一步，再提交: python agent.py act --reason \"简要行动依据\"")
         print("  3. 提交完成后立即重启后台监听: python agent.py watch")
         print("=" * 60)
 
@@ -221,7 +221,8 @@ def receive_update(timeout: int):
         print("=" * 60)
         print("💭 【收到新事件更新 (仅观察)】")
         print("-" * 60)
-        print("💡 指引: 请花 1 分钟简短更新本地 memory.md 的推理笔记，不要行动，立即重启 watch。")
+        print("💡 判断或记忆有实质变化时，在 memory.md 更新当前判断、依据摘要、不确定性、下一步与记住的事实；随后重启 watch 等待点名。")
+        print("   工具排错与终端操作记录写入 runtime.log。")
         print("=" * 60)
     sys.stdout.flush()
     if cfg != previous_cfg:
@@ -397,7 +398,7 @@ def main():
     p_act.add_argument("--value", type=float, help="数值决策")
     p_act.add_argument("--data", type=str, help="结构化 JSON 数据文件")
     p_act.add_argument("--file", type=str, help="从文件读取行动内容 (默认 action.txt)")
-    p_act.add_argument("--reason", type=str, help="仅主持人可见的战术动机/思考链")
+    p_act.add_argument("--reason", type=str, help="仅主持人可见的简要行动依据")
     p_act.add_argument("content", nargs="*", help="命令行直接传入的内容")
 
     # log

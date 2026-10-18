@@ -212,7 +212,7 @@ try:
     init_notes = (
         f"# {{data['name']}} ({{SEAT}}号位 · {{data['role']}}) 私有笔记\\n\\n"
         f"## 专属目标与初始设定\\n{{data['init_prompt']}}\\n\\n"
-        f"## 局势推演笔记\\n"
+        f"## 当前思考\\n\\n## 依据与不确定性\\n\\n## 下一步\\n\\n## 记住的事实\\n"
     )
     if not mem.exists():
         mem.write_text(init_notes, encoding="utf-8")
@@ -225,6 +225,7 @@ try:
     print("📝 你的初始目标与提示词:")
     print(data["init_prompt"])
     print("-" * 60)
+    print("📝 memory.md：主动维护当前判断、依据摘要与不确定性、下一步、记住的事实；正式提交前及判断改变时更新。工具排错写入 runtime.log。")
     print("⚡ 指引: 请立即以后台任务运行监听，并结束当前回合:")
     print("   python agent.py watch")
     print("=" * 60)
