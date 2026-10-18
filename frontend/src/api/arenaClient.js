@@ -32,6 +32,10 @@ export const arenaApi = {
   saveArchive: () => jsonRequest("/api/admin/archives", {}, "POST"),
   mods: () => request("/api/admin/mods"),
   contentPacks: () => request("/api/admin/content-packs"),
+  avatarModels: () => request("/api/admin/avatars/models"),
+  uploadAvatar: dataUrl => jsonRequest("/api/admin/avatars/images", { data_url: dataUrl }),
+  setModelAvatar: (model, avatarId) => jsonRequest("/api/admin/avatars/models", { model, avatar_id: avatarId }, "PUT"),
+  seatAppearance: (seatId, fields) => jsonRequest(`/api/admin/seats/${encodeURIComponent(seatId)}/appearance`, fields, "PATCH"),
   applyMods: enabled => jsonRequest("/api/admin/mods", { enabled }),
   modSettings: (modId, values) => jsonRequest(`/api/admin/mods/${encodeURIComponent(modId)}/settings`, { values }, "PUT")
 };
