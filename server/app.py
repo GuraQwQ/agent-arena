@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 from engine import ArenaEngine, SNAPSHOT_FILE
 from archives import ArchiveStore
-from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, FlowPlan, HostCommand, RoomSnapshot, Scenario, SeatDefinition, VisibilityScope
+from models import ActionSubmission, ArenaSettingsUpdate, EventAcknowledgement, FlowPlan, HostCommand, RoomSnapshot, Scenario, SeatDefinition, SeatAppearance, VisibilityScope
 from cli_mount import mount_cli, unmount_cli
 from gameplay import GAMES_ROOT, GameDriver, load_mod
 from mods import ModConflict, ModManager, ModRuntime, mod_file, read_manifest, snapshot_mods
@@ -798,6 +798,51 @@ async def admin_update_seat(definition: SeatDefinition, request: Request):
     require_admin(request)
     seat = engine.update_seat(definition)
     return {"success": True, "seat": seat.model_dump(exclude={"token"})}
+
+
+class AvatarUpload(BaseModel):
+    data_url: str = Field(..., max_length=400_000)
+
+
+class ModelAvatarUpdate(BaseModel):
+    model: str = Field(..., min_length=1, max_length=200)
+    avatar_id: Optional[str] = Field(None, pattern=r"^[a-f0-9]{64}$")
+
+
+@app.get("/api/avatars/{avatar_id}")
+async def avatar_image(avatar_id: str):
+    image = engine.avatars.image(avatar_id)
+    if image is None:
+        raise HTTPException(status_code=404, detail="头像不存在")
+    content, mime = image
+    return Response(content, media_type=mime, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.post("/api/admin/avatars/images")
+async def upload_avatar(body: AvatarUpload, request: Request):
+    require_admin(request)
+    return {"avatar_id": engine.avatars.upload(body.data_url)}
+
+
+@app.get("/api/admin/avatars/models")
+async def model_avatars(request: Request):
+    require_admin(request)
+    return {"models": engine.avatars.catalog()}
+
+
+@app.put("/api/admin/avatars/models")
+async def update_model_avatar(body: ModelAvatarUpdate, request: Request):
+    require_admin(request)
+    engine.avatars.set_model(body.model, body.avatar_id)
+    engine.broadcast_host_update()
+    return {"models": engine.avatars.catalog()}
+
+
+@app.patch("/api/admin/seats/{seat_id}/appearance")
+async def update_seat_appearance(seat_id: int, body: SeatAppearance, request: Request):
+    require_admin(request)
+    engine.update_appearance(seat_id, body.model_dump(exclude_unset=True))
+    return {"success": True}
 
 
 @app.delete("/api/admin/seats/{seat_id}")

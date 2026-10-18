@@ -233,7 +233,7 @@ def _safe_seat(value: Any) -> dict[str, Any]:
     seat = _mapping(value)
     return {
         key: _json_value(seat[key])
-        for key in ("seat_id", "name", "role", "model", "harness", "status", "group_id", "last_seen")
+        for key in ("seat_id", "name", "role", "model", "harness", "status", "group_id", "last_seen", "avatar_id")
         if key in seat
     }
 
@@ -247,6 +247,7 @@ def build_room_summary(snapshot: Any) -> dict[str, Any]:
     events = list(source.get("events") or [])
     return {
         "room_id": source.get("room_id"),
+        "model_avatars": _json_value(source.get("model_avatars") or {}),
         "room_title": source.get("room_title", ""),
         "phase": source.get("phase", ""),
         "round_num": source.get("round_num", 1),

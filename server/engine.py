@@ -19,6 +19,7 @@ from archives import ArchiveStore
 from storage import write_json
 from gameplay import GameDriver
 from memory_observer import memory_snapshots
+from avatars import AvatarStore
 
 SNAPSHOT_DIR = Path(os.environ.get("ARENA_DATA_DIR") or Path(__file__).resolve().parent.parent / "data").expanduser().resolve()
 SNAPSHOT_FILE = SNAPSHOT_DIR / "room_state.json"
@@ -74,6 +75,7 @@ class ArenaEngine:
         self.memory_status = {}
         self.mod_profile = []
         self.mod_settings = {}
+        self.avatars = AvatarStore(SNAPSHOT_FILE.parent / "avatars.json")
         self._reset_generation = 0
         
         # 座次映射: seat_id -> Seat
@@ -125,7 +127,8 @@ class ArenaEngine:
             round_num=self.round_num, seq_counter=self._seq_counter, seats=self.seats,
             events=self.events, active_actions=self.active_actions,
             last_seen_seqs=self.last_seen_seqs, settings=self.settings, receipts=self.receipts,
-            scenario_description=self.scenario_description, flow=self.flow, game=self.game, workspace_paths=self.workspace_paths, mod_profile=self.mod_profile, mod_settings=self.mod_settings
+            scenario_description=self.scenario_description, flow=self.flow, game=self.game, workspace_paths=self.workspace_paths, mod_profile=self.mod_profile, mod_settings=self.mod_settings,
+            model_avatars=self.avatars.presets()
         )
 
     def _apply_snapshot(self, snapshot: RoomSnapshot):
@@ -258,6 +261,7 @@ class ArenaEngine:
         if not existing:
             raise ValueError("席位不存在，只能使用主持人预留的席位")
 
+        model = model.strip() if model and model.strip() not in {"未知模型", "未指定模型", "未接入"} else ""
         if token and existing.token == token:
             # 携带有效 token 重连
             existing.name = name or existing.name
@@ -316,9 +320,28 @@ class ArenaEngine:
             seat = Seat(seat_id=definition.seat_id, token=uuid.uuid4().hex, claim_token=uuid.uuid4().hex)
             self.seats[seat.seat_id] = seat
             self.last_seen_seqs[seat.seat_id] = 0
-        for key, value in definition.model_dump().items():
+        fields = definition.model_dump()
+        for key in ("model", "avatar_id"):
+            if key not in definition.model_fields_set:
+                fields.pop(key)
+        if "avatar_id" in fields:
+            self.avatars.require_image(fields["avatar_id"])
+        for key, value in fields.items():
             setattr(seat, key, value)
         return seat
+
+    @mutating
+    def update_appearance(self, seat_id, fields):
+        if seat_id not in self.seats:
+            raise ValueError("席位不存在")
+        if "avatar_id" in fields:
+            self.avatars.require_image(fields["avatar_id"])
+            self.seats[seat_id].avatar_id = fields["avatar_id"]
+        if fields.get("model") is not None:
+            model = fields["model"].strip()
+            if not model:
+                raise ValueError("请填写模型名称")
+            self.seats[seat_id].model = model
 
     @mutating
     def remove_seat(self, seat_id: int):
@@ -894,6 +917,7 @@ class ArenaEngine:
             "memory_status": self.memory_status,
             "mod_profile": self.mod_profile,
             "mod_settings": self.mod_settings,
+            "model_avatars": self.avatars.presets(),
             "seats": {
                 sid: {**s.model_dump(exclude={"token"}),
                       "connection_status": "LISTENING" if sid in self._wait_events else

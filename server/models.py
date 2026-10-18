@@ -45,6 +45,7 @@ class Seat(BaseModel):
     name: str = ""
     role: str = "玩家"
     model: str = "未知模型"
+    avatar_id: Optional[str] = Field(None, pattern=r"^[a-f0-9]{64}$")
     harness: str = "未知环境"
     token: str = ""
     claim_token: str = ""
@@ -125,8 +126,15 @@ class SeatDefinition(BaseModel):
     seat_id: int = Field(..., ge=1)
     name: str = Field("", max_length=200)
     role: str = Field("玩家", max_length=200)
+    model: str = Field("未知模型", max_length=200)
+    avatar_id: Optional[str] = Field(None, pattern=r"^[a-f0-9]{64}$")
     group_id: Optional[str] = Field(None, max_length=200)
     init_prompt: str = ""
+
+
+class SeatAppearance(BaseModel):
+    model: Optional[str] = Field(None, min_length=1, max_length=200)
+    avatar_id: Optional[str] = Field(None, pattern=r"^[a-f0-9]{64}$")
 
 
 class FlowStep(BaseModel):
@@ -203,6 +211,7 @@ class RoomSnapshot(BaseModel):
     workspace_paths: Dict[int, str] = Field(default_factory=dict)
     mod_profile: List[dict] = Field(default_factory=list)
     mod_settings: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    model_avatars: Dict[str, str] = Field(default_factory=dict)
 
 
 class EventAcknowledgement(BaseModel):

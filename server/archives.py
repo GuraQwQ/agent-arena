@@ -120,6 +120,7 @@ class ArchiveStore:
         exported = {key: snapshot[key] for key in (
             "schema_version", "room_id", "room_title", "phase", "round_num",
             "archived_at", "settings", "scenario_description", "mod_profile", "mod_settings",
+            "model_avatars",
         ) if key in snapshot}
         exported["seats"] = {
             key: {name: value for name, value in seat.items() if name not in {"token", "claim_token"}}
