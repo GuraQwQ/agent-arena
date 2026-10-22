@@ -35,7 +35,7 @@ class Event(BaseModel):
     group_id: Optional[str] = Field(None, description="所属分组 (GROUP 模式时使用)")
     scope: VisibilityScope = Field(VisibilityScope.PUBLIC, description="可见性范围")
     recipient_seats: Optional[List[int]] = None
-    secret_reason: Optional[str] = Field(None, description="仅主持人可见的深层思考链/战术意图")
+    secret_reason: Optional[str] = Field(None, description="仅主持人可见的行动附注")
     data: Optional[Dict[str, Any]] = Field(default_factory=dict, description="结构化附加元数据")
 
 

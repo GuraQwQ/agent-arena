@@ -70,7 +70,8 @@ def simulate_agent(seat: int, name: str, model: str, claim_token: str = ""):
             pending = json.loads((agent_dir / ".agent.json").read_text(encoding="utf-8")).get("pending_action", {})
             act_args = ["act", "--reason", reason]
             if pending.get("action_type") in {"VOTE", "CHOOSE"}:
-                act_args.extend(["--choice", pending["options"][0]])
+                choice = pending["options"][0] if pending.get("options") else pending["action_options"][0]["option_id"]
+                act_args.extend(["--choice", choice])
             if pending.get("action_type") == "NUMBER":
                 value = pending.get("min_value")
                 if value is None:
@@ -83,11 +84,7 @@ def simulate_agent(seat: int, name: str, model: str, claim_token: str = ""):
         elif code == 43:
             print(f"\n💭 [{name}] 捕获退出码 43 (收到观察更新):")
             print(out)
-            # 记录到 memory.md
-            mem_path = agent_dir / "memory.md"
-            with open(mem_path, "a", encoding="utf-8") as f:
-                f.write(f"\n- 观察到新动态，时间戳: {time.strftime('%H:%M:%S')}")
-            print(f"[{name}] memory.md 更新完成，立即恢复监听。")
+            print(f"[{name}] 已读取观察，继续监听。")
             print("-" * 50)
 
         elif code == 0:

@@ -131,9 +131,10 @@ class ArchiveStore:
         for event in snapshot["events"]:
             scope = event.get("scope")
             if seat_id is not None:
-                if scope == "HOST_ONLY":
+                own_note = event.get("event_type") == "AGENT_NOTE" and event.get("from_seat") == seat_id
+                if scope == "HOST_ONLY" and not own_note:
                     continue
-                if scope != "PUBLIC" and seat_id not in (event.get("recipient_seats") or []):
+                if scope != "PUBLIC" and not own_note and seat_id not in (event.get("recipient_seats") or []):
                     continue
             item = dict(event)
             if seat_id is not None:

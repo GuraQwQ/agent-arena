@@ -10,16 +10,17 @@ import { createModFrontend } from "./mods/modFrontend.js";
 import { Avatar } from "./avatars/Avatar.jsx";
 import { AvatarSettings } from "./avatars/AvatarSettings.jsx";
 import { DirectorPanel } from "./director/DirectorPanel.jsx";
-import { MemoryPanel } from "./memory/MemoryPanel.jsx";
+import { JournalPanel } from "./journal/JournalPanel.jsx";
 import { ReplayView } from "./replay/ReplayView.jsx";
 
 const DEFAULT_DISPLAY = {
-  categories: ["results", "messages"],
+  categories: ["results", "messages", "thoughts"],
+  preferenceVersion: 2,
   scopes: ["PUBLIC", "PRIVATE", "GROUP", "HOST_ONLY"],
   seat: "",
   query: "",
   autoScroll: true,
-  showMemories: true,
+  showJournal: true,
   compact: false,
   theme: "light",
   fontSize: "normal",
@@ -34,7 +35,11 @@ function clone(value) {
 function readDisplay() {
   try {
     const stored = JSON.parse(localStorage.getItem("arena_display_preferences") || "null");
-    return { ...DEFAULT_DISPLAY, ...(stored || {}) };
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return clone(DEFAULT_DISPLAY);
+    const { showMemories, preferenceVersion, ...preferences } = stored;
+    const categories = Array.isArray(preferences.categories) ? preferences.categories : DEFAULT_DISPLAY.categories;
+    return { ...DEFAULT_DISPLAY, ...preferences, showJournal: preferences.showJournal ?? showMemories ?? true,
+      categories: preferenceVersion === 2 ? categories : [...new Set([...categories, "thoughts"])], preferenceVersion: 2 };
   } catch {
     return clone(DEFAULT_DISPLAY);
   }
@@ -48,9 +53,10 @@ function App() {
   const [avatarSeat, setAvatarSeat] = useState(null);
   const openAvatars = seatId => { setAvatarSeat(seatId); setPanel("avatars"); };
   const [tab, setTab] = useState("events");
+  const [replaySnapshot, setReplaySnapshot] = useState(null);
   const [inspectorTab, setInspectorTab] = useState(null);
   const inspectorTrigger = useRef(null);
-  const inspector = inspectorTab || (display.showMemories ? "memory" : null);
+  const inspector = inspectorTab || (display.showJournal ? "journal" : null);
   const openInspector = (name, event) => { inspectorTrigger.current = event.currentTarget; setInspectorTab(name); };
   const closeInspector = useCallback(() => { setInspectorTab(null); inspectorTrigger.current?.focus(); }, []);
   useEffect(() => {
@@ -88,14 +94,15 @@ function App() {
     <main className="app-shell">
       <SeatRail snapshot={current} onAvatars={openAvatars} onNotice={arena.showNotice} />
       <section className="workspace">
-        <WorkspaceHeader current={current} tab={tab} setTab={setTab} directorOpen={inspector === "director"} onDirector={event => openInspector("director", event)} onMemory={event => openInspector("memory", event)} />
+        <WorkspaceHeader current={current} tab={tab} setTab={setTab} directorOpen={inspector === "director"} onDirector={event => openInspector("director", event)} onJournal={event => openInspector("journal", event)} />
         {tab === "events" && <EventTimeline snapshot={current} display={display} setDisplay={setDisplay} presenter={eventPresenter} />}
         <div className="game-view" hidden={tab !== "game"}><GameStage snapshot={current} onNotice={arena.showNotice} onPresenter={updateEventPresenter} /></div>
-        {tab === "replay" && <ReplayView onNotice={arena.showNotice} />}
+        {tab === "journal" && <JournalPanel snapshot={current} expanded />}
+        {tab === "replay" && <ReplayView onNotice={arena.showNotice} onFrame={setReplaySnapshot} />}
       </section>
       {inspector && <aside className={`rail inspector-rail ${inspectorTab ? "is-open" : ""} ${inspector === "director" ? "is-director" : ""}`}>
-        <nav className="inspector-tabs" aria-label="主持工具"><button type="button" aria-pressed={inspector === "memory"} onClick={() => setInspectorTab("memory")}>思考与记忆</button><button type="button" aria-pressed={inspector === "director"} onClick={() => setInspectorTab("director")}>调度</button>{inspector === "memory" && inspectorTab && <button type="button" className="inspector-close" aria-label="收起思考与记忆" onClick={closeInspector}>×</button>}</nav>
-        <div hidden={inspector !== "memory"}><MemoryPanel snapshot={current} /></div>
+        <nav className="inspector-tabs" aria-label="主持工具"><button type="button" aria-pressed={inspector === "journal"} onClick={() => setInspectorTab("journal")}>心路历程</button><button type="button" aria-pressed={inspector === "director"} onClick={() => setInspectorTab("director")}>调度</button>{inspector === "journal" && inspectorTab && <button type="button" className="inspector-close" aria-label="收起心路历程" onClick={closeInspector}>×</button>}</nav>
+        <div hidden={inspector !== "journal"}><JournalPanel snapshot={tab === "replay" ? replaySnapshot : current} onExpand={() => setTab("journal")} /></div>
         <div hidden={inspector !== "director"}><DirectorPanel key={arena.snapshot?.room_id} snapshot={arena.snapshot} onNotice={arena.showNotice} onClose={closeInspector} /></div>
       </aside>}
     </main>
@@ -145,10 +152,10 @@ function AppHeader({ current, seats, perspective, setPerspective, connected, deb
   </header>;
 }
 
-function WorkspaceHeader({ current, tab, setTab, directorOpen, onDirector, onMemory }) {
+function WorkspaceHeader({ current, tab, setTab, directorOpen, onDirector, onJournal }) {
   return <div className="workspace-header">
     <div><p className="eyebrow">{current?.room_title || "竞技场"}</p><h2><BlurText>{current?.phase || "准备中"}</BlurText></h2><p className="subtle">第 {current?.round_num || 1} 回合 · {Object.keys(current?.active_actions || {}).length ? `${Object.keys(current.active_actions).length} 个待办行动` : "等待主持人调度"}</p></div>
-    <div className="workspace-tools"><div className="host-tools"><button type="button" className="button button-quiet memory-toggle" onClick={onMemory}>思考与记忆</button><button type="button" className="button button-primary director-toggle" aria-expanded={directorOpen} onClick={onDirector}>主持调度</button></div><nav className="view-tabs"><button className={tab === "events" ? "active" : ""} onClick={() => setTab("events")}>实时事件</button><button className={tab === "game" ? "active" : ""} onClick={() => setTab("game")}>游戏桌面</button><button className={tab === "replay" ? "active" : ""} onClick={() => setTab("replay")}>存档复盘</button></nav></div>
+    <div className="workspace-tools"><div className="host-tools"><button type="button" className="button button-quiet journal-toggle" onClick={onJournal}>心路历程</button><button type="button" className="button button-primary director-toggle" aria-expanded={directorOpen} onClick={onDirector}>主持调度</button></div><nav className="view-tabs"><button className={tab === "events" ? "active" : ""} onClick={() => setTab("events")}>实时事件</button><button className={tab === "game" ? "active" : ""} onClick={() => setTab("game")}>游戏桌面</button><button className={tab === "replay" ? "active" : ""} onClick={() => setTab("replay")}>存档复盘</button><button className={tab === "journal" ? "active" : ""} onClick={() => setTab("journal")}>心路历程</button></nav></div>
   </div>;
 }
 
@@ -167,7 +174,7 @@ function GameStage({ snapshot, onNotice, onPresenter }) {
   const stylesheet = useRef(null);
   const [frontend, setFrontend] = useState(null);
   const gameKey = snapshot?.game ? `${snapshot.game.id}:${snapshot.game.name}:${snapshot.game.version}` : null;
-  const payload = { state: snapshot?.game?.state, status: snapshot?.game?.status, perspective: snapshot?.perspective_seat ?? null, seats: snapshot?.seats, model_avatars: snapshot?.model_avatars || {}, mod_settings: snapshot?.mod_settings?.[snapshot?.game?.name] || {} };
+  const payload = { state: snapshot?.game?.state, status: snapshot?.game?.status, perspective: snapshot?.perspective_seat ?? null, seats: snapshot?.seats, model_avatars: snapshot?.model_avatars || {}, journal: snapshot?.journal, mod_settings: snapshot?.mod_settings?.[snapshot?.game?.name] || {} };
   useEffect(() => { if (!container.current) return; bridge.current = createModFrontend({ onNotice, onPresenter, container: container.current, stylesheetRef: stylesheet }); return () => { bridge.current?.destroy(); }; }, [onNotice, onPresenter]);
   useEffect(() => { let active = true; if (!gameKey) { setFrontend(null); bridge.current?.destroy(); return undefined; } arenaApi.gameFrontend().then(data => { if (active) setFrontend(data.frontend); }).catch(error => onNotice(error.message, true)); return () => { active = false; bridge.current?.destroy(); }; }, [gameKey, onNotice]);
   useEffect(() => { if (!frontend?.module || !bridge.current) return; bridge.current.mount(frontend, { ...payload, adminRequest: (url, body, method = "POST") => jsonRequest(url, body, method) }); }, [frontend, gameKey]);
@@ -185,7 +192,7 @@ function ControlPanel({ panel, setPanel, display, setDisplay, snapshot, avatarSe
 function DisplaySettings({ display, setDisplay }) {
   const categories = Object.entries(EVENT_CATEGORIES);
   const toggle = (key, value) => setDisplay({ ...display, [key]: display[key].includes(value) ? display[key].filter(item => item !== value) : [...display[key], value] });
-  return <div className="settings-content"><SettingsSection title="外观"><div className="settings-grid"><label>主题<select value={display.theme} onChange={event => setDisplay({ ...display, theme: event.target.value })}><option value="light">明亮 · 纸白</option><option value="dark">深色 · 石墨</option><option value="system">跟随系统</option></select></label><label>文字大小<select value={display.fontSize} onChange={event => setDisplay({ ...display, fontSize: event.target.value })}><option value="small">较小</option><option value="normal">标准</option><option value="large">较大</option></select></label></div><label className="check-row"><input type="checkbox" checked={display.highContrast} onChange={event => setDisplay({ ...display, highContrast: event.target.checked })} />增强文字对比</label><label className="check-row"><input type="checkbox" checked={display.reduceMotion} onChange={event => setDisplay({ ...display, reduceMotion: event.target.checked })} />减少动态效果</label></SettingsSection><SettingsSection title="事件类型"><div className="check-grid">{categories.map(([id, label]) => <label className="check-row" key={id}><input type="checkbox" checked={display.categories.includes(id)} onChange={() => toggle("categories", id)} />{label}</label>)}</div></SettingsSection><SettingsSection title="可见范围"><div className="check-grid">{[["PUBLIC", "全员公开"], ["PRIVATE", "定向私信"], ["GROUP", "阵营消息"], ["HOST_ONLY", "仅主持人"]].map(([id, label]) => <label className="check-row" key={id}><input type="checkbox" checked={display.scopes.includes(id)} onChange={() => toggle("scopes", id)} />{label}</label>)}</div></SettingsSection><SettingsSection title="阅读布局"><label className="check-row"><input type="checkbox" checked={display.showMemories} onChange={event => setDisplay({ ...display, showMemories: event.target.checked })} />显示思考与记忆侧栏</label><label className="check-row"><input type="checkbox" checked={display.compact} onChange={event => setDisplay({ ...display, compact: event.target.checked })} />紧凑事件间距</label></SettingsSection><button className="button button-quiet button-wide" onClick={() => setDisplay(clone(DEFAULT_DISPLAY))}>恢复默认显示</button></div>;
+  return <div className="settings-content"><SettingsSection title="外观"><div className="settings-grid"><label>主题<select value={display.theme} onChange={event => setDisplay({ ...display, theme: event.target.value })}><option value="light">明亮 · 纸白</option><option value="dark">深色 · 石墨</option><option value="system">跟随系统</option></select></label><label>文字大小<select value={display.fontSize} onChange={event => setDisplay({ ...display, fontSize: event.target.value })}><option value="small">较小</option><option value="normal">标准</option><option value="large">较大</option></select></label></div><label className="check-row"><input type="checkbox" checked={display.highContrast} onChange={event => setDisplay({ ...display, highContrast: event.target.checked })} />增强文字对比</label><label className="check-row"><input type="checkbox" checked={display.reduceMotion} onChange={event => setDisplay({ ...display, reduceMotion: event.target.checked })} />减少动态效果</label></SettingsSection><SettingsSection title="事件类型"><div className="check-grid">{categories.map(([id, label]) => <label className="check-row" key={id}><input type="checkbox" checked={display.categories.includes(id)} onChange={() => toggle("categories", id)} />{label}</label>)}</div></SettingsSection><SettingsSection title="可见范围"><div className="check-grid">{[["PUBLIC", "全员公开"], ["PRIVATE", "定向私信"], ["GROUP", "阵营消息"], ["HOST_ONLY", "仅主持人"]].map(([id, label]) => <label className="check-row" key={id}><input type="checkbox" checked={display.scopes.includes(id)} onChange={() => toggle("scopes", id)} />{label}</label>)}</div></SettingsSection><SettingsSection title="阅读布局"><label className="check-row"><input type="checkbox" checked={display.showJournal} onChange={event => setDisplay({ ...display, showJournal: event.target.checked })} />显示心路历程侧栏</label><label className="check-row"><input type="checkbox" checked={display.compact} onChange={event => setDisplay({ ...display, compact: event.target.checked })} />紧凑事件间距</label></SettingsSection><button className="button button-quiet button-wide" onClick={() => setDisplay(clone(DEFAULT_DISPLAY))}>恢复默认显示</button></div>;
 }
 
 function SettingsSection({ title, children }) { return <section className="settings-section"><h4>{title}</h4>{children}</section>; }

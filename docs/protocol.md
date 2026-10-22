@@ -9,3 +9,13 @@
 旧快照升级为版本 2 前，会在同目录创建 `room_state.v1.bak`。旧版没有可靠的客户端确认状态，因此迁移后从头投递一次仍在历史窗口内的可见事件。迁移可重复运行，席位令牌不变；损坏快照保留原文件并报告错误，避免覆盖现有业务数据。
 
 验证：`python -m unittest discover -s tests -v`。
+
+## 即时自述
+
+`POST /api/player/notes` 是即时自述的统一写入接口。正文包含 `seat_id`、`room_id`、`token`、`note_id`、`content`、`created_at`，可选 `request_id`、`related_seq`、`revises_seq`、`remember`。响应返回唯一的 `event_seq` 和服务记录时间 `recorded_at`。自述不消耗待办行动，普通事件广播不向其他玩家分发。
+
+客户端命令为 `arena note "此刻的想法"`；`--remember` 将同一记录保留为记忆，`--revises <事件序号>` 追加修正，`--about <事件序号>` 关联已收到的事件。修正需要同时加 `--remember` 才会保留为当前记忆。作者和主持人可读取；作者通过 `GET /api/player/notes?seat_id=1&room_id=...&since_seq=0` 读取，令牌放在 `X-Player-Token` 中，使用响应的 `next_seq` 继续分页。
+
+CLI 与原生适配器复用此接口。适配器只转发 Agent 明确写出的自述，使用 `channel: "native"`，并将原消息的稳定编号作为 `note_id`。重发保留原 `note_id`、`created_at` 与正文；同一编号重试返回同一事件，修改内容需用新编号追加修正。服务端保存当时的作者信息和实际记录时间。结束行动后到达的关联记录标明补充，继续引用原行动编号。
+
+待确认记录保存在客户端现有配置中，`arena note --retry` 补发；`--discard <note_id>` 撤下未确认项。界面气泡、侧栏及存档引用同一事件，`memory.md` 与行动附注按其文档和行动用途保留。

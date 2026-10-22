@@ -1,6 +1,6 @@
 .workspace-tools { display: grid; justify-items: end; gap: 12px; }
 .host-tools { display: flex; gap: 8px; }
-.memory-toggle { display: none; }
+.journal-toggle { display: none; }
 .director-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; }
 .inspector-rail { border-right: 0; border-left: 1px solid var(--line); padding: 0 0 0 18px; }
 .inspector-tabs { display: flex; gap: 4px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
@@ -19,7 +19,7 @@
 .app-shell:not(:has(.inspector-rail)) { grid-template-columns: 250px minmax(0, 1fr); }
 @media (max-width: 1180px) {
   .inspector-rail { display: none; }
-  .memory-toggle { display: inline-flex; }
+  .journal-toggle { display: inline-flex; }
   .app-shell:has(.inspector-rail.is-open) { grid-template-columns: minmax(0, 1fr) 320px; }
   .app-shell:has(.inspector-rail.is-open) > .seat-rail { display: none; }
   .inspector-rail.is-open { display: block; }

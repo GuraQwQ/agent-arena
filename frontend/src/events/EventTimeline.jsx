@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState
 import { categoryOf, describeEvent, EVENT_CATEGORIES, filterEvents, scopeLabel } from "./eventModel.js";
 
 import { Avatar } from "../avatars/Avatar.jsx";
+import { ThoughtBubble } from "../journal/ThoughtBubble.jsx";
 
 const PAGE_SIZE = 80;
 
@@ -48,6 +49,7 @@ export function EventTimeline({ snapshot, display, setDisplay, presenter }) {
 
 export function EventItem({ event, presenter, snapshot }) {
   const [rawOpen, setRawOpen] = useState(false);
+  if (event.event_type === "AGENT_NOTE") return <ThoughtBubble event={event} snapshot={snapshot} />;
   const description = describeEvent(event, presenter);
   const category = categoryOf(event);
   const actor = event.from_seat ?? event.data?.seat ?? event.to_seat;

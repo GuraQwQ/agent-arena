@@ -6,7 +6,7 @@
 退出码规范:
   0 : 成功 / 超时无事
   42: 轮到你正式行动 (ACTION_REQUIRED) -> 打印主持人指引并唤醒 Agent
-  43: 观察更新 (OBSERVE_UPDATE) -> 判断或记忆变化时更新 memory.md，再重启 watch
+  43: 观察更新 (OBSERVE_UPDATE) -> 读取新事件，再重启 watch
   1 : 业务拒绝或参数错误
   2 : 无法连接服务器
 """
@@ -192,38 +192,32 @@ def receive_update(timeout: int):
     previous_cfg = dict(cfg)
     if res.get("room_id"):
         cfg["room_id"] = res["room_id"]
+    action = res.get("action") if code == EXIT_ACT else None
     for event in fresh_events:
+        if action and event.get("event_type") == "ACTION_REQUEST" and event.get("data", {}).get("request_id") == action["request_id"]:
+            continue
         print(f"#{event['seq']} {event['title']}: {event['content']}")
 
     if code == EXIT_ACT:
-        action = res["action"]
         cfg["pending_action"] = action
-        print("=" * 60)
-        print("🔔 【轮到你正式行动】")
-        print(f"阶段: {action.get('phase', '当前')} | 动作类型: {action.get('action_type', 'ACT')}")
-        print("-" * 60)
-        print("📝 主持人行动指引:")
+        deadline = time.strftime("%H:%M:%S", time.localtime(action["deadline"])) if action.get("deadline") else "未设置"
+        print(f"行动 {action['request_id']} · {action.get('phase', '当前')} · {action.get('action_type', 'ACT')} · 截止 {deadline}")
         print(action.get("prompt", "请做出行动。"))
         if action.get("options"):
             print(f"可选分支: {', '.join(action['options'])}")
             print('提交选择: arena act --choice "候选项"')
+        elif action.get("action_options"):
+            for option in action["action_options"]:
+                details = {key: option[key] for key in ("value", "targets", "value_schema", "text_schema", "risk_tags") if option.get(key) is not None and option.get(key) != []}
+                print(f"{option['option_id']}: {option.get('text', '')}" + (" " + json.dumps(details, ensure_ascii=False) if details else ""))
+            print('提交选择: arena act --choice "选项编号" --watch')
         if action.get("action_type") == "NUMBER":
             print(f"允许范围: {action.get('min_value')} 至 {action.get('max_value')}")
             print("提交数值: arena act --value 10")
-        print("-" * 60)
-        print("⚡ 行动方式:")
-        print("  1. 将你的陈词/决策写入本地 action.txt")
-        print("  2. 更新 memory.md 中的当前判断与下一步，再提交: python agent.py act --reason \"简要行动依据\"")
-        print("  3. 提交完成后立即重启后台监听: python agent.py watch")
-        print("=" * 60)
+        print('提交并继续监听: python agent.py act "回答" --watch；长文使用 --file action.txt。')
 
     elif code == EXIT_OBSERVE:
-        print("=" * 60)
-        print("💭 【收到新事件更新 (仅观察)】")
-        print("-" * 60)
-        print("💡 判断或记忆有实质变化时，在 memory.md 更新当前判断、依据摘要、不确定性、下一步与记住的事实；随后重启 watch 等待点名。")
-        print("   工具排错与终端操作记录写入 runtime.log。")
-        print("=" * 60)
+        print('观察更新；有新想法时用 note 记录，随后 watch。')
     sys.stdout.flush()
     if cfg != previous_cfg:
         save_config(cfg)
@@ -265,10 +259,15 @@ def cmd_act(args):
     content = ""
     action_file = Path(args.file) if args.file else Path("action.txt")
 
-    if action_file.exists():
+    used_file = False
+    if args.file:
         content = action_file.read_text(encoding="utf-8").strip()
+        used_file = True
     elif args.content:
         content = " ".join(args.content).strip()
+    elif args.choice is None and args.value is None and not args.data and action_file.exists():
+        content = action_file.read_text(encoding="utf-8").strip()
+        used_file = True
 
     structured = {}
     if args.choice is not None:
@@ -283,6 +282,7 @@ def cmd_act(args):
             if not isinstance(extra, dict):
                 raise ValueError("结构化数据必须是 JSON 对象")
             structured.update(extra)
+            content = content or json.dumps(extra, ensure_ascii=False)
         except (OSError, ValueError) as exc:
             print(f"❌ 结构化数据无效: {exc}")
             sys.exit(EXIT_ERROR)
@@ -320,13 +320,14 @@ def cmd_act(args):
     print(f"✅ 行动已成功提交！(事件序列号: #{res.get('event_seq')})")
 
     # 归档 action.txt
-    if action_file.exists() and action_file.name == "action.txt":
+    if used_file and action_file.name == "action.txt":
         try:
             action_file.replace(action_file.with_name("action.sent.txt"))
-        except Exception:
-            pass
+        except OSError as exc:
+            print(f"行动已提交，文件归档失败：{exc}")
 
-    print("💡 提示: 请务必重新运行后台监听任务: python agent.py watch")
+    if getattr(args, "watch", False):
+        cmd_wait(argparse.Namespace(command="watch", follow=True, timeout=50))
     sys.exit(EXIT_OK)
 
 
@@ -358,6 +359,69 @@ def cmd_status(args):
 
     res = api_request(cfg, "GET", "/api/player/status", params={"seat_id": seat_id})
     print(json.dumps(res, ensure_ascii=False, indent=2))
+    sys.exit(EXIT_OK)
+
+
+def cmd_note(args):
+    cfg = load_config()
+    if not cfg.get("seat") or not cfg.get("token") or not cfg.get("room_id"):
+        print("❌ 请先执行主持人提供的自举命令")
+        sys.exit(EXIT_ERROR)
+    text = " ".join(args.content).strip()
+    queue = cfg.get("pending_notes", [])
+    if args.discard:
+        cfg["pending_notes"] = [item for item in queue if item["note_id"] != args.discard]
+        save_config(cfg)
+        print("待确认记录已撤下")
+        sys.exit(EXIT_OK)
+    if len(text) > 8000:
+        print("❌ 一条自述最多 8000 字符")
+        sys.exit(EXIT_ERROR)
+    if text:
+        fields = {"content": text, "remember": args.remember, "revises_seq": args.revises,
+                  "related_seq": args.about, "request_id": args.request_id or cfg.get("pending_action", {}).get("request_id")}
+        if not any(item["room_id"] == cfg["room_id"] and item["seat_id"] == cfg["seat"]
+                   and all(item.get(key) == value for key, value in fields.items()) for item in queue):
+            queue.append({**fields, "seat_id": cfg["seat"], "room_id": cfg["room_id"],
+                          "note_id": uuid.uuid4().hex, "created_at": time.time(), "channel": "cli"})
+            cfg["pending_notes"] = queue
+            save_config(cfg)
+    elif not args.retry or not any(item["room_id"] == cfg["room_id"] and item["seat_id"] == cfg["seat"] for item in queue):
+        print('❌ 请使用 note "此刻的想法"，或用 note --retry 补发待确认记录')
+        sys.exit(EXIT_ERROR)
+    for entry in queue:
+        if entry["room_id"] != cfg["room_id"] or entry["seat_id"] != cfg["seat"]:
+            continue
+        try:
+            result = api_request(cfg, "POST", "/api/player/notes", body={**entry, "token": cfg["token"]})
+        except SystemExit:
+            print(f"自述仍待确认：{entry['note_id']}；可用 note --retry 重试，或 note --discard {entry['note_id']} 撤下")
+            raise
+        latest = load_config()
+        remaining = [item for item in latest.get("pending_notes", []) if item["note_id"] != entry["note_id"]]
+        if remaining:
+            latest["pending_notes"] = remaining
+        else:
+            latest.pop("pending_notes", None)
+        save_config(latest)
+        print(f"💭 自述已记录 #{result['event_seq']}")
+    sys.exit(EXIT_OK)
+
+
+def cmd_notes(args):
+    cfg = load_config()
+    if not cfg.get("seat") or not cfg.get("token") or not cfg.get("room_id"):
+        print("❌ 请先执行主持人提供的自举命令")
+        sys.exit(EXIT_ERROR)
+    result = api_request(cfg, "GET", "/api/player/notes", params={
+        "seat_id": cfg["seat"], "room_id": cfg["room_id"], "since_seq": args.since})
+    for event in result["events"]:
+        stamp = time.strftime("%H:%M:%S", time.localtime(event["timestamp"]))
+        print(f"#{event['seq']} {stamp} {event['content']}")
+    print("=== 当前保留的记忆 ===")
+    for event in result["journal"]["remembered"].get(str(cfg["seat"]), []):
+        print(f"#{event['seq']} {event['content']}")
+    print(f"下一页：python agent.py notes --since {result['next_seq']}")
     sys.exit(EXIT_OK)
 
 
@@ -398,12 +462,24 @@ def main():
     p_act.add_argument("--value", type=float, help="数值决策")
     p_act.add_argument("--data", type=str, help="结构化 JSON 数据文件")
     p_act.add_argument("--file", type=str, help="从文件读取行动内容 (默认 action.txt)")
-    p_act.add_argument("--reason", type=str, help="仅主持人可见的简要行动依据")
+    p_act.add_argument("--reason", type=str, help="仅主持人可见的行动附注")
+    p_act.add_argument("--watch", action="store_true", help="提交成功后继续监听")
     p_act.add_argument("content", nargs="*", help="命令行直接传入的内容")
 
     # log
     p_log = subparsers.add_parser("log", help="查看自身视野内的历史记录")
     p_log.add_argument("--since", type=int, default=0, help="只查看该序列号之后的事件")
+
+    p_note = subparsers.add_parser("note", help="记录一次此刻的想法")
+    p_note.add_argument("content", nargs="*", help="第一人称简短自述")
+    p_note.add_argument("--remember", action="store_true", help="将这条自述同时保留为记忆")
+    p_note.add_argument("--revises", type=int, help="修正自己的某条自述序号")
+    p_note.add_argument("--about", type=int, help="关联某条已收到的事件")
+    p_note.add_argument("--request-id", help="关联行动编号，默认使用当前待办")
+    p_note.add_argument("--retry", action="store_true", help="补发未确认的自述")
+    p_note.add_argument("--discard", help="撤下指定编号的未确认记录")
+    p_notes = subparsers.add_parser("notes", help="读取自己的自述与保留记忆")
+    p_notes.add_argument("--since", type=int, default=0, help="从此序号之后继续读取")
 
     # status
     subparsers.add_parser("status", help="查看当前状态")
@@ -422,6 +498,10 @@ def main():
         cmd_status(args)
     elif args.command == "game":
         cmd_game(args)
+    elif args.command == "note":
+        cmd_note(args)
+    elif args.command == "notes":
+        cmd_notes(args)
     else:
         parser.print_help()
 

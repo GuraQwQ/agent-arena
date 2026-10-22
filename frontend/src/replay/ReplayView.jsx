@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { arenaApi } from "../api/arenaClient.js";
 import { EventItem } from "../events/EventTimeline.jsx";
+import { replayFrame } from "../journal/journalModel.js";
 
-export function ReplayView({ onNotice }) {
+export function ReplayView({ onNotice, onFrame }) {
   const [archives, setArchives] = useState([]);
   const [selected, setSelected] = useState("");
   const [replay, setReplay] = useState(null);
   const [position, setPosition] = useState(0);
   const scrollRef = useRef(null);
   const selectionRef = useRef("");
+  const frame = useMemo(() => replayFrame(replay, position), [replay, position]);
+  useEffect(() => { onFrame(frame); }, [frame, onFrame]);
+  useEffect(() => () => onFrame(null), [onFrame]);
   const refresh = useCallback(() => arenaApi.archives().then(data => setArchives(data.archives || [])).catch(error => onNotice(error.message, true)), [onNotice]);
   useEffect(() => { refresh(); }, [refresh]);
   useLayoutEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [position]);

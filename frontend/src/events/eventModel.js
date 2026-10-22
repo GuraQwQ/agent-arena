@@ -1,7 +1,8 @@
 export const EVENT_CATEGORIES = {
   results: "结果与进程",
   messages: "消息与发言",
-  memory: "记忆写入",
+  thoughts: "即时自述",
+  memory: "文档记录",
   requests: "行动指令",
   submissions: "原始提交",
   system: "系统记录"
@@ -10,6 +11,7 @@ export const EVENT_CATEGORIES = {
 export const ACTION_NAMES = { ACT: "行动", SPEAK: "发言", VOTE: "投票", CHOOSE: "选择", NUMBER: "数值" };
 
 export function categoryOf(event) {
+  if (event.event_type === "AGENT_NOTE") return "thoughts";
   if (event.event_type === "MEMORY_UPDATE") return "memory";
   if (["ACTION_REQUEST", "ACTION_CANCELLED"].includes(event.event_type)
     || (event.event_type === "PRIVATE_MESSAGE" && event.from_seat == null)) return "requests";

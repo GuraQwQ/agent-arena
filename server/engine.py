@@ -20,6 +20,7 @@ from storage import write_json
 from gameplay import GameDriver
 from memory_observer import memory_snapshots
 from avatars import AvatarStore
+from agent_journal import append_note, journal_projection
 
 SNAPSHOT_DIR = Path(os.environ.get("ARENA_DATA_DIR") or Path(__file__).resolve().parent.parent / "data").expanduser().resolve()
 SNAPSHOT_FILE = SNAPSHOT_DIR / "room_state.json"
@@ -299,6 +300,10 @@ class ArenaEngine:
         """验证主持人发放的席位认领令牌"""
         seat = self.seats.get(seat_id)
         return bool(seat and claim_token and seat.claim_token == claim_token)
+
+    @mutating
+    def record_agent_note(self, note):
+        return append_note(self, note)
 
     def get_scenario(self) -> Scenario:
         return Scenario(
@@ -795,7 +800,7 @@ class ArenaEngine:
                 "code": 43,
                 "status": "OBSERVE_UPDATE",
                 "events": unseen_events,
-                "message": "视野内有新事件发生，请简短更新本地 memory.md 并立即重启 wait。"
+                "message": "收到观察更新；有新想法时用 note 记录，随后继续监听。"
             }
 
         # 3. 进入挂起等待
@@ -847,7 +852,7 @@ class ArenaEngine:
                 "code": 43,
                 "status": "OBSERVE_UPDATE",
                 "events": fresh_events,
-                "message": "收到新事件更新，更新私有思考后重启 wait。"
+                "message": "收到观察更新；有新想法时用 note 记录，随后继续监听。"
             }
 
         # 6. 超时静默退出
@@ -914,6 +919,7 @@ class ArenaEngine:
             "game": self.game,
             "workspace_paths": self.workspace_paths,
             "memories": memory_snapshots(self.events),
+            "journal": journal_projection(self.events),
             "memory_status": self.memory_status,
             "mod_profile": self.mod_profile,
             "mod_settings": self.mod_settings,

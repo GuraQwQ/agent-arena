@@ -40,7 +40,7 @@ def init_workspaces(count: int, server: str, clean: bool = False, root: Path = W
         # 初始空 memory.md
         mem_file = agent_dir / "memory.md"
         if clean or not mem_file.exists():
-            mem_file.write_text(f"# Agent {i} 私有笔记\n\n## 当前思考\n\n## 依据与不确定性\n\n## 下一步\n\n## 记住的事实\n", encoding="utf-8")
+            mem_file.write_text(f"# Agent {i} 角色资料\n\n", encoding="utf-8")
 
         print(f"  ✓ 已就绪: {agent_dir} (seat={i})")
 

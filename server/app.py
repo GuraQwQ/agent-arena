@@ -32,6 +32,7 @@ from host_access import HostAccess, JoinClosed
 from memory_observer import MemoryObserver
 from content_packs import scan_content_packs
 from observer import build_event_page, build_room_summary, build_runtime_snapshot
+from agent_journal import AgentNote, journal_projection
 
 
 host_access = HostAccess(Path(os.environ.get("ARENA_HOST_CONFIG") or Path(__file__).resolve().parents[1] / "host-login.json"))
@@ -202,7 +203,7 @@ try:
     client = runpy.run_path(str(agent_py))
     cfg = client["load_config"]()
     if cfg.get("token") != data["token"]:
-        cfg = {{}}
+        cfg = {{"pending_notes": cfg["pending_notes"]}} if cfg.get("pending_notes") else {{}}
     cfg.update({{"server": SERVER, "seat": SEAT, "token": data["token"], "room_id": data["room_id"]}})
     client["save_config"](cfg)
     print("  ✓ 已配置 .agent.json 身份令牌")
@@ -210,9 +211,8 @@ try:
     # 写入 memory.md
     mem = Path("memory.md")
     init_notes = (
-        f"# {{data['name']}} ({{SEAT}}号位 · {{data['role']}}) 私有笔记\\n\\n"
+        f"# {{data['name']}} ({{SEAT}}号位 · {{data['role']}}) 角色资料\\n\\n"
         f"## 专属目标与初始设定\\n{{data['init_prompt']}}\\n\\n"
-        f"## 当前思考\\n\\n## 依据与不确定性\\n\\n## 下一步\\n\\n## 记住的事实\\n"
     )
     if not mem.exists():
         mem.write_text(init_notes, encoding="utf-8")
@@ -225,7 +225,7 @@ try:
     print("📝 你的初始目标与提示词:")
     print(data["init_prompt"])
     print("-" * 60)
-    print("📝 memory.md：主动维护当前判断、依据摘要与不确定性、下一步、记住的事实；正式提交前及判断改变时更新。工具排错写入 runtime.log。")
+    print('💭 即时自述：python agent.py note "此刻的想法"；需要保留时加 --remember，恢复历程用 notes。memory.md 存放角色资料，工具排错写入 runtime.log。')
     print("⚡ 指引: 请立即以后台任务运行监听，并结束当前回合:")
     print("   python agent.py watch")
     print("=" * 60)
@@ -318,6 +318,26 @@ async def player_ack(ack: EventAcknowledgement, x_player_token: str = Header(...
     return {"success": True}
 
 
+@app.post("/api/player/notes")
+async def player_note(note: AgentNote):
+    try:
+        event = engine.record_agent_note(note)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return {"success": True, "event_seq": event.seq, "recorded_at": event.timestamp}
+
+
+@app.get("/api/player/notes")
+async def player_notes(seat_id: int, room_id: str, since_seq: int = Query(0, ge=0),
+                       limit: int = Query(100, ge=1, le=500), x_player_token: str = Header(...)):
+    if room_id != engine.room_id or not engine.verify_token(seat_id, x_player_token):
+        raise HTTPException(status_code=403, detail="房间或席位凭证不匹配")
+    events = [event for event in engine.events if event.event_type == "AGENT_NOTE" and event.from_seat == seat_id]
+    page = [event for event in events if event.seq > since_seq][:limit]
+    return {"events": [event.model_dump(exclude={"secret_reason"}) for event in page],
+            "journal": journal_projection(events), "next_seq": page[-1].seq if page else since_seq}
+
+
 @app.get("/api/player/status")
 async def player_status(
     seat_id: int = Query(...),
@@ -408,6 +428,12 @@ async def admin_perspective(request: Request, seat_id: Optional[int] = Query(Non
         snapshot["events"] = engine.filter_events_for_seat(seat_id)
         snapshot["active_actions"] = {sid: action for sid, action in snapshot["active_actions"].items() if sid == seat_id}
         snapshot["memories"] = {sid: memory for sid, memory in snapshot["memories"].items() if sid == seat_id}
+        snapshot["events"] += [event.model_dump() for event in engine.events
+                               if event.event_type == "AGENT_NOTE" and event.from_seat == seat_id
+                               and engine._is_event_in_history_window(event)]
+        snapshot["events"].sort(key=lambda event: event["seq"])
+        snapshot["journal"] = {key: {sid: value for sid, value in items.items() if sid == seat_id}
+                               for key, items in snapshot["journal"].items()}
         if engine.game:
             snapshot["game"] = {**engine.game, "state": GameDriver(engine).observe(seat_id)["state"]}
     return snapshot

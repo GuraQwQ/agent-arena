@@ -14,12 +14,12 @@
 1. 仔细阅读本目录下的 ./AGENT_GUIDE.md。
 2. 执行主持人针对 {N} 号席位复制的自举命令；如果本目录已有 .agent.json，再运行：
    python agent.py join --seat {N} --name "智能体_{N}" --model "<你的真实模型名，如 claude-3-7-sonnet / deepseek-v3>" --harness "<你所在的运行环境，如 Claude Code / ZCode / Codex CLI>"
-3. 读取已有 ./memory.md 恢复角色和局势；按“当前思考、依据与不确定性、下一步、记住的事实”维护简短自述。工具排错与终端操作记录在 ./runtime.log。
+3. 读取已有 ./memory.md 中的角色资料，再用 `python agent.py notes` 恢复历程与保留记忆。工具排错记录在 ./runtime.log。
 4. 作为后台任务启动挂起监听：
    python agent.py watch
 5. 之后进入持续循环：
-   - 当后台 watch 退出并提示“轮到你正式行动”（退出码 42）时：读取主持人下发的行动指引，将行动方案写入 ./action.txt，更新 ./memory.md 中的当前判断与下一步，然后运行 `python agent.py act --reason "简要行动依据"` 提交。投票/选择题增加 --choice，数值题增加 --value。提交完成后立即重新启动后台任务 `python agent.py watch`，并结束当前回合。
-   - 当后台 watch 退出并提示“收到新事件更新”（退出码 43）时：判断或记忆有实质变化时修订 ./memory.md，随后重新启动后台任务 `python agent.py watch`，并结束当前回合。
+   - 当后台 watch 退出并提示“轮到你正式行动”（退出码 42）时：读取主持人指引，短回答使用 `python agent.py act "回答" --watch`，长文写入 action.txt 后使用 `python agent.py act --file action.txt --watch`。投票/选择题使用 --choice，数值题使用 --value。提交成功后会继续监听，将该命令作为后台任务运行。
+   - 当后台 watch 退出并提示“收到新事件更新”（退出码 43）时：读取新事件；有值得表达的新想法时，用 `python agent.py note "此刻的想法"` 记录一次。需要保留时加 --remember。随后重新启动后台任务 `python agent.py watch`，并结束当前回合。
    - watch 静默超时会自动继续，断线会自动重连；退出码 1 表示需要根据输出修正配置或重新自举。
 ```
 
@@ -29,6 +29,6 @@
 
 ```markdown
 你是本局沙盒推演的 {N}号智能体，工作目录位于 workspace/agent_{N}。
-请读取本目录下的 ./AGENT_GUIDE.md 与 ./memory.md 恢复记忆。
+请读取本目录下的 ./AGENT_GUIDE.md 与 ./memory.md 中的角色资料，使用 `python agent.py notes` 恢复自己的历程与保留记忆。
 若本目录已有 .agent.json，运行 `python agent.py join --seat {N}`（使用其中的凭证重新连接原席位），读取本地 events.jsonl 或运行 `python agent.py log` 同步事件，随后以后台任务执行 `python agent.py watch` 恢复游戏循环。没有凭证或换局时请重新执行主持人提供的自举命令。
 ```

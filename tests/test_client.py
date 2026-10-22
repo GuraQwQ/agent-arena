@@ -133,11 +133,35 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 1)
             self.assertEqual(agent.CONFIG_FILE.read_text(encoding="utf-8"), damaged)
 
+    def test_note_retry_preserves_one_id_and_original_action(self):
+        self.cfg["pending_action"] = {"request_id": "original", "action_type": "SPEAK"}
+        agent.save_config(self.cfg)
+        with patch.object(agent.sys, "argv", ["agent.py", "note", "我现在准备先验证这个假设", "--remember"]), \
+                patch.object(agent, "api_request", side_effect=SystemExit(2)):
+            with self.assertRaises(SystemExit) as failure:
+                agent.main()
+        self.assertEqual(failure.exception.code, 2)
+        pending = agent.load_config()["pending_notes"][0]
+        current = agent.load_config()
+        current["pending_action"] = {"request_id": "next", "action_type": "ACT"}
+        agent.save_config(current)
+        with patch.object(agent.sys, "argv", ["agent.py", "note", "--retry"]), \
+                patch.object(agent, "api_request", return_value={"event_seq": 3}) as api:
+            with self.assertRaises(SystemExit) as done:
+                agent.main()
+        self.assertEqual(done.exception.code, 0)
+        sent = api.call_args.kwargs["body"]
+        self.assertEqual(sent["note_id"], pending["note_id"])
+        self.assertEqual(sent["created_at"], pending["created_at"])
+        self.assertEqual(sent["request_id"], "original")
+        self.assertNotIn("pending_notes", agent.load_config())
+        self.assertEqual(agent.load_config()["pending_action"]["request_id"], "next")
+
     def test_successful_action_preserves_a_newer_pending_action(self):
         self.cfg["pending_action"] = {"request_id": "old-request", "action_type": "ACT"}
         agent.save_config(self.cfg)
         args = argparse.Namespace(
-            file=str(self.root / "missing.txt"), content=["我的回答"], choice=None, value=None,
+            file=None, content=["我的回答"], choice=None, value=None,
             data=None, type=None, reason=None, request_id=None,
         )
 
@@ -157,6 +181,41 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(current["pending_action"]["request_id"], "new-request")
         self.assertEqual(current["room_title"], "另一个进程的新配置")
         self.assertNotIn("pending_submission", current)
+
+    def test_other_room_unconfirmed_notes_are_retained_without_blocking_current_room(self):
+        self.cfg["pending_notes"] = [{"note_id": "old", "room_id": "old-room", "seat_id": 1}]
+        agent.save_config(self.cfg)
+        with patch.object(agent.sys, "argv", ["agent.py", "note", "本局的新想法"]), \
+                patch.object(agent, "api_request", return_value={"event_seq": 4}) as api:
+            with self.assertRaises(SystemExit) as done:
+                agent.main()
+        self.assertEqual(done.exception.code, 0)
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.kwargs["body"]["room_id"], "room-one")
+        self.assertEqual(agent.load_config()["pending_notes"], self.cfg["pending_notes"])
+
+    def test_action_prompt_once_and_structured_options_are_visible(self):
+        action = {"request_id": "request", "prompt": "唯一指令", "action_type": "CHOOSE",
+                  "action_options": [{"option_id": "choice-a", "text": "甲"}]}
+        event = {**self.event, "content": "唯一指令", "event_type": "ACTION_REQUEST", "data": {"request_id": "request"}}
+        with patch.object(agent, "api_request", return_value={"room_id": "room-one", "code": 42, "action": action, "events": [event]}):
+            self.assertEqual(agent.receive_update(1), 42)
+        self.assertEqual(self.output.getvalue().count("唯一指令"), 1)
+        self.assertIn("choice-a: 甲", self.output.getvalue())
+
+    def test_explicit_content_ignores_old_file_and_watch_follows_success(self):
+        stale = self.root / "action.txt"
+        stale.write_text("旧答案", encoding="utf-8")
+        args = argparse.Namespace(file=None, content=["新答案"], choice=None, value=None,
+                                  data=None, type=None, reason=None, request_id=None, watch=True)
+        with patch.object(agent, "Path", return_value=stale), patch.object(agent, "save_config"), \
+                patch.object(agent, "api_request", return_value={"event_seq": 1}) as api, \
+                patch.object(agent, "cmd_wait", side_effect=SystemExit(42)) as wait:
+            with self.assertRaises(SystemExit):
+                agent.cmd_act(args)
+        self.assertEqual(api.call_args.kwargs["body"]["content"], "新答案")
+        self.assertEqual(stale.read_text(encoding="utf-8"), "旧答案")
+        wait.assert_called_once()
 
 
 if __name__ == "__main__":

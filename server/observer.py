@@ -72,6 +72,8 @@ def _scope(event: Mapping[str, Any]) -> str:
 
 
 def _category(event_type: str, event: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    if event_type == "AGENT_NOTE":
+        return "thoughts"
     if event_type == "MEMORY_UPDATE":
         return "memory"
     if event_type in {"ACTION_REQUEST", "ACTION_CANCELLED"} or (
