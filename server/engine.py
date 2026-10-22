@@ -10,6 +10,7 @@ import os
 import threading
 import time
 import uuid
+from bisect import bisect_right
 from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -48,12 +49,11 @@ def mutating(method):
             if generation != self._reset_generation:
                 for waiter in list(self._wait_events.values()):
                     waiter.set()
-            for event in self.events:
-                if self.room_id == before.room_id and event.seq <= before.seq_counter:
-                    continue
+            start = len(before.events) if self.room_id == before.room_id else 0
+            for event in self.events[start:]:
                 self._notify_relevant_waiters(event)
                 self._notify_sse(event)
-            self.broadcast_host_update()
+            self.broadcast_host_update(full=self.room_id != before.room_id or self.settings != before.settings)
             return result
     return wrapped
 
@@ -97,6 +97,9 @@ class ArenaEngine:
         
         # 主持人 Web 控制台 SSE 订阅队列列表
         self.sse_queues: List[asyncio.Queue] = []
+        self._projection_events = None
+        self._projection_count = 0
+        self._projections = {"memories": {}, "journal": {"latest": {}, "remembered": {}}}
 
         # 尝试从磁盘快照恢复对局
         if restore_from_disk and self.load_snapshot():
@@ -220,6 +223,15 @@ class ArenaEngine:
             snapshot.last_seen_seqs = {sid: 0 for sid in snapshot.seats}
             snapshot.schema_version = 2
         self._apply_snapshot(snapshot)
+        cursor_path = SNAPSHOT_FILE.with_suffix(".ack.json")
+        try:
+            cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
+            if cursor.get("room_id") == self.room_id:
+                for sid, seq in cursor.get("sequences", {}).items():
+                    if int(sid) in self.seats and type(seq) is int and 0 <= seq <= self._seq_counter:
+                        self.last_seen_seqs[int(sid)] = max(self.last_seen_seqs.get(int(sid), 0), seq)
+        except (OSError, ValueError, AttributeError):
+            pass
         for event in self.events:
             if event.recipient_seats is None and event.scope != VisibilityScope.PUBLIC:
                 event.recipient_seats = self._recipients(event.scope, event.from_seat, event.to_seat, event.group_id)
@@ -486,9 +498,7 @@ class ArenaEngine:
         """为特定座次拉取可见事件流，严格抹除 secret_reason 与不可见条目"""
         result = []
         now = time.time()
-        for e in self.events:
-            if e.seq <= since_seq:
-                continue
+        for e in self.events[bisect_right(self.events, since_seq, key=lambda item: item.seq):]:
             if not self._is_event_in_history_window(e, now):
                 continue
             if self._is_event_visible_to_seat(e, seat_id):
@@ -761,13 +771,17 @@ class ArenaEngine:
         self.broadcast_host_update()
         return event
 
-    @mutating
     def acknowledge(self, seat_id: int, token: str, room_id: str, seq: int):
-        if not self.verify_token(seat_id, token):
-            raise PermissionError("无效的座次令牌")
-        if room_id != self.room_id or not 0 <= seq <= self._seq_counter:
-            raise ValueError("确认游标不属于当前对局")
-        self.last_seen_seqs[seat_id] = max(self.last_seen_seqs.get(seat_id, 0), seq)
+        with self._state_lock:
+            if not self.verify_token(seat_id, token):
+                raise PermissionError("无效的座次令牌")
+            if room_id != self.room_id or not 0 <= seq <= self._seq_counter:
+                raise ValueError("确认游标不属于当前对局")
+            if seq <= self.last_seen_seqs.get(seat_id, 0):
+                return
+            sequences = {**self.last_seen_seqs, seat_id: seq}
+            write_json(SNAPSHOT_FILE.with_suffix(".ack.json"), {"room_id": self.room_id, "sequences": sequences})
+            self.last_seen_seqs = sequences
 
     async def wait_turn(self, seat_id: int, token: str, timeout: int = 50) -> Dict[str, Any]:
         """行动立即返回；普通观察按房间策略聚合，历史始终保留。"""
@@ -779,7 +793,7 @@ class ArenaEngine:
         self._wait_events[seat_id] = waiter
         seat.last_seen = time.time()
         seat.status = "WAITING"
-        self.broadcast_host_update()
+        self.broadcast_presence()
         expires = time.monotonic() + timeout
         batch_started = None
         try:
@@ -818,7 +832,7 @@ class ArenaEngine:
                 self._wait_events.pop(seat_id, None)
             seat.status = "THINKING" if seat_id in self.active_actions else "IDLE"
             seat.last_seen = time.time()
-            self.broadcast_host_update()
+            self.broadcast_presence()
 
     def _notify_sse(self, event: Event):
         """向所有连接的 Web 控制台推送增量事件"""
@@ -826,15 +840,44 @@ class ArenaEngine:
             return
         data = event.model_dump()
         for q in self.sse_queues:
-            q.put_nowait({"type": "EVENT", "data": data})
+            q.put_nowait({"type": "EVENT", "room_id": self.room_id, "data": data})
 
-    def broadcast_host_update(self):
-        """推送全量座次状态快照更新"""
-        if self._changing:
+    def history_projections(self):
+        if self._projection_events is not self.events or self._projection_count > len(self.events):
+            self._projection_events = self.events
+            self._projection_count = 0
+            self._projections = {"memories": {}, "journal": {"latest": {}, "remembered": {}}}
+        fresh = self.events[self._projection_count:]
+        if fresh:
+            self._projections = {"memories": memory_snapshots(fresh, self._projections["memories"]),
+                                 "journal": journal_projection(fresh, self._projections["journal"])}
+            self._projection_count = len(self.events)
+        return self._projections
+
+    def host_seats(self):
+        now = time.time()
+        return {sid: {**seat.model_dump(exclude={"token"}),
+                      "connection_status": "LISTENING" if sid in self._wait_events else
+                          "NEVER" if not seat.last_seen else "RECENT" if now - seat.last_seen <= 75 else "OFFLINE",
+                      "seconds_since_seen": max(0, int(now - seat.last_seen)) if seat.last_seen else None}
+                for sid, seat in self.seats.items()}
+
+    def broadcast_presence(self):
+        if self._changing or not self.sse_queues:
             return
-        snapshot = self.get_host_snapshot()
-        for q in self.sse_queues:
-            q.put_nowait({"type": "SNAPSHOT", "data": snapshot})
+        data = {"room_id": self.room_id, "seats": self.host_seats(), "server_time": time.time()}
+        for queue in self.sse_queues:
+            queue.put_nowait({"type": "PRESENCE", "data": data})
+
+    def broadcast_host_update(self, full=False):
+        if self._changing or not self.sse_queues:
+            return
+        snapshot = self.get_host_snapshot(include_events=full)
+        if not full:
+            snapshot.pop("memories")
+            snapshot.pop("journal")
+        for queue in self.sse_queues:
+            queue.put_nowait({"type": "SNAPSHOT" if full else "STATE", "data": snapshot})
 
     @mutating
     def reset(self):
@@ -862,7 +905,7 @@ class ArenaEngine:
         self._initialize_seats()
         self.save_snapshot()
 
-    def get_host_snapshot(self) -> Dict[str, Any]:
+    def get_host_snapshot(self, include_events=True) -> Dict[str, Any]:
         """获取主持人上帝视角全量快照"""
         now = time.time()
         return {
@@ -875,23 +918,15 @@ class ArenaEngine:
             "flow": self.flow.model_dump(),
             "game": self.game,
             "workspace_paths": self.workspace_paths,
-            "memories": memory_snapshots(self.events),
-            "journal": journal_projection(self.events),
+            "memories": self.history_projections()["memories"],
+            "journal": self.history_projections()["journal"],
+            "seq_counter": self._seq_counter,
+            "server_time": now,
             "memory_status": self.memory_status,
             "mod_profile": self.mod_profile,
             "mod_settings": self.mod_settings,
             "model_avatars": self.avatars.presets(),
-            "seats": {
-                sid: {**s.model_dump(exclude={"token"}),
-                      "connection_status": "LISTENING" if sid in self._wait_events else
-                          "NEVER" if not s.last_seen else "RECENT" if now - s.last_seen <= 75 else "OFFLINE",
-                      "seconds_since_seen": max(0, int(now - s.last_seen)) if s.last_seen else None}
-                for sid, s in self.seats.items()
-            },
+            "seats": self.host_seats(),
             "active_actions": {sid: a.model_dump() for sid, a in self.active_actions.items()},
-            "events": [
-                e.model_dump()
-                for e in self.events
-                if self._is_event_in_history_window(e, now)
-            ]
+            **({"events": [e.model_dump() for e in self.events if self._is_event_in_history_window(e, now)]} if include_events else {})
         }

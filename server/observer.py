@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
 import json
 from typing import Any, Iterable, Mapping, Optional

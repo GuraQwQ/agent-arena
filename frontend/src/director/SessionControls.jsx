@@ -52,7 +52,7 @@ export function SessionControls({ snapshot, onNotice }) {
     <details className="director-section" open><summary>剧本与自动流程</summary>
       <div className="director-actions"><label className="button button-quiet">导入剧本<input className="sr-only" type="file" accept=".json,application/json" onChange={readScenario} disabled={busy} /></label><button type="button" className="button button-quiet" onClick={exportScenario} disabled={busy}>导出剧本</button></div>
       {confirmLoad && <div className="director-confirm"><p>载入「{confirmLoad.title}」并开始新局，当前局会自动存档。</p><button className="button button-primary" disabled={busy} onClick={() => run(async () => { await arenaApi.loadScenario(confirmLoad); setConfirmLoad(null); }, "剧本已载入")}>确认载入</button><button className="button button-quiet" onClick={() => setConfirmLoad(null)}>取消</button></div>}
-      <p className="director-pending">{flow?.status || "IDLE"} · {(flow?.steps?.length ? flow.index + 1 : 0)} / {flow?.steps?.length || 0} 步</p>
+      <p className="director-pending">{flow?.status || "IDLE"} · {Math.min(flow?.steps?.length || 0, (flow?.index || 0) + 1)} / {flow?.steps?.length || 0} 步</p>
       <div className="director-actions">
         {!active && <button className="button button-primary" disabled={busy || !flow?.steps?.length} onClick={() => run(() => arenaApi.startFlow(flow.steps), "流程已启动")}>启动剧本流程</button>}
         {active && (flow.status === "PAUSED" ? <button className="button button-primary" disabled={busy} onClick={() => run(() => arenaApi.flowControl("resume"))}>继续流程</button> : <button className="button button-quiet" disabled={busy} onClick={() => run(() => arenaApi.flowControl("pause"))}>暂停流程</button>)}

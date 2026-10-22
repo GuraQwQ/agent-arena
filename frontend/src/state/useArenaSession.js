@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { arenaApi } from "../api/arenaClient.js";
+import { applySnapshotMessage } from "./snapshotReducer.js";
 
 export function useArenaSession() {
   const [access, setAccess] = useState(null);
@@ -33,7 +34,9 @@ export function useArenaSession() {
     stream.onmessage = event => {
       try {
         const payload = JSON.parse(event.data);
-        if (payload.type === "SNAPSHOT") setSnapshot(payload.data);
+        if (["SNAPSHOT", "STATE", "PRESENCE", "EVENT"].includes(payload.type)) {
+          setSnapshot(current => applySnapshotMessage(current, payload));
+        }
         if (payload.type === "HOST_ACCESS") setAccess(current => ({ ...current, ...payload.data }));
         if (payload.type === "MOD_RELOAD") window.location.reload();
       } catch {

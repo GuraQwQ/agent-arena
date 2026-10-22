@@ -4,10 +4,10 @@
 """
 
 import asyncio
-import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
@@ -487,9 +487,8 @@ async def admin_stream(request: Request):
                     msg = await asyncio.wait_for(queue.get(), timeout=25.0)
                     yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
-                    # 心跳同时刷新时间窗口，及时隐藏过期事件
-                    snapshot = json.dumps({"type": "SNAPSHOT", "data": engine.get_host_snapshot()}, ensure_ascii=False)
-                    yield f"data: {snapshot}\n\n"
+                    presence = {"room_id": engine.room_id, "seats": engine.host_seats(), "server_time": time.time()}
+                    yield f"data: {json.dumps({'type': 'PRESENCE', 'data': presence}, ensure_ascii=False)}\n\n"
                     yield ": ping\n\n"
         finally:
             if queue in engine.sse_queues:

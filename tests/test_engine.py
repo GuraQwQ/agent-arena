@@ -24,6 +24,41 @@ class EngineCase(unittest.TestCase):
 
 
 class EngineTest(EngineCase):
+    def test_ack_is_small_atomic_and_duplicate_ack_is_silent(self):
+        self.room.record_event("ANNOUNCEMENT", "消息", "内容")
+        token = self.room.seats[1].token
+        before = self.path.read_bytes()
+        self.room.acknowledge(1, token, self.room.room_id, 1)
+        self.assertEqual(self.path.read_bytes(), before)
+        with patch.object(engine, "write_json") as write:
+            self.room.acknowledge(1, token, self.room.room_id, 1)
+            write.assert_not_called()
+        self.room.record_event("ANNOUNCEMENT", "消息", "另一条")
+        with patch.object(engine, "write_json", side_effect=OSError("保存失败")):
+            with self.assertRaises(OSError):
+                self.room.acknowledge(1, token, self.room.room_id, 2)
+        self.assertEqual(self.room.last_seen_seqs[1], 1)
+        restored = engine.ArenaEngine()
+        self.assertEqual(restored.last_seen_seqs[1], 1)
+
+    def test_stream_updates_and_history_projection_are_incremental(self):
+        queue = asyncio.Queue()
+        self.room.sse_queues.append(queue)
+        self.room.record_event("ANNOUNCEMENT", "消息", "内容")
+        self.assertEqual(queue.get_nowait()["type"], "EVENT")
+        state = queue.get_nowait()
+        self.assertEqual(state["type"], "STATE")
+        self.assertNotIn("events", state["data"])
+        self.assertNotIn("journal", state["data"])
+        first = self.room.history_projections()
+        with patch.object(engine, "memory_snapshots") as memory:
+            self.assertIs(self.room.history_projections(), first)
+            memory.assert_not_called()
+        self.room.broadcast_presence()
+        self.assertEqual(set(queue.get_nowait()["data"]), {"room_id", "seats", "server_time"})
+        self.room.update_settings({"history_rounds": 1})
+        self.assertEqual(queue.get_nowait()["type"], "SNAPSHOT")
+
     def test_observation_modes_preserve_events_and_actions_interrupt_batch(self):
         async def check():
             self.room.update_settings({"observation_mode": "action"})

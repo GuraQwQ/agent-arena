@@ -27,3 +27,9 @@ CLI 与原生适配器复用此接口。适配器只转发 Agent 明确写出的
 `arena act "回答" --watch` 提交成功后继续监听。`arena notes` 默认恢复最近 20 条自述、当前保留记忆和待办，同一记录只显示一次；`--view memory` 只读保留记忆，`--view history --since 0 --limit 20` 从头分页。`arena log` 默认最近 30 条，指定 `--since 0` 从头分页。
 
 主持人 `summary` 只返回房间摘要；`runtime` 默认最近 30 条，可用 `since_seq`、`limit` 增量读取。事件返回一份主持人正文 `content` 和结构化数据 `data`，完整状态仍可通过 `snapshot` 获取。
+
+## 增量推送与接收检查点
+
+主持人 SSE 首次连接及重连发送 `SNAPSHOT`，运行中发送 `EVENT`、`STATE` 和 `PRESENCE`；换局或修改历史窗口重新同步快照。事件按房间与序号去重，记忆投影随事件更新。旧游标仍从房间快照读取，新的 ACK 原子写入同目录 `room_state.ack.json`；文件仅对匹配房间生效，损坏时回退快照游标并重发事件。
+
+客户端 `events.jsonl` 保留原始事件，`events.cursor.json` 保存文件身份、大小、修改时间与各房间接收游标。检查点缺失、过期或文件变化时自动重建；`arena clean` 删除该检查点，下次读取重建。先同步日志再保存检查点与 ACK，中断后允许重试。

@@ -71,9 +71,9 @@ def append_note(room, note: AgentNote):
     )
 
 
-def journal_projection(events):
-    latest = {}
-    remembered = {}
+def journal_projection(events, previous=None):
+    latest = dict(previous["latest"]) if previous else {}
+    remembered = {seat: {event["seq"]: event for event in items} for seat, items in previous["remembered"].items()} if previous else {}
     for event in events:
         if event.event_type != "AGENT_NOTE":
             continue

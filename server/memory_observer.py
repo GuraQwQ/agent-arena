@@ -7,8 +7,8 @@ from pathlib import Path
 from models import VisibilityScope
 
 
-def memory_snapshots(events):
-    result = {}
+def memory_snapshots(events, previous=None):
+    result = dict(previous or {})
     for event in events:
         if event.event_type == "MEMORY_UPDATE" and event.from_seat is not None:
             result[event.from_seat] = {**(event.data or {}), "seq": event.seq, "round_num": event.round_num,
@@ -28,7 +28,7 @@ class MemoryObserver:
             self.room_id = self.room.room_id
             self._fingerprints.clear()
             self._pending.clear()
-        previous = memory_snapshots(self.room.events)
+        previous = self.room.history_projections()["memories"]
         old_status = self.room.memory_status
         statuses = {}
         for seat_id, directory in self.room.workspace_paths.items():

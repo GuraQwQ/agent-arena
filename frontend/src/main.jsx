@@ -88,7 +88,7 @@ function App() {
       if (!controller.signal.aborted) setPerspectiveSnapshot(data);
     }).catch(error => { if (!controller.signal.aborted) arena.showNotice(error.message, true); });
     return () => controller.abort();
-  }, [arena.snapshot, perspective]);
+  }, [arena.snapshot?.room_id, arena.snapshot?.revision, perspective]);
 
   if (!arena.access?.authenticated) return <HostLogin access={arena.access} onJoin={arena.join} onRefresh={arena.refreshAccess} notice={arena.notice} />;
   return <>

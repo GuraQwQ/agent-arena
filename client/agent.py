@@ -100,42 +100,69 @@ def api_request(cfg: dict, method: str, path: str, body: dict = None, params: di
 
 
 def persist_events(room_id: str, events: list) -> list:
-    """确认接收前写入日志，重试去重并修复中断留下的最后半行。"""
+    """检查点匹配时只追加；文件变更或中断后从原日志重建。"""
     if not events:
         return []
+    checkpoint_path = EVENTS_FILE.with_suffix(".cursor.json")
     fresh = []
     with EVENTS_FILE.open("a+b") as handle:
-        handle.seek(0)
-        lines = handle.readlines()
-        known = set()
-        valid_end = 0
-        missing_newline = False
-        for index, line in enumerate(lines):
-            try:
-                item = json.loads(line.decode("utf-8"))
-                if not isinstance(item, dict) or not isinstance(item.get("seq"), int) or not item.get("room_id"):
-                    raise ValueError("缺少对局编号或事件序号")
-            except (UnicodeError, ValueError) as exc:
-                if index == len(lines) - 1 and not line.endswith(b"\n"):
+        stat = os.fstat(handle.fileno())
+        fingerprint = [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            cursors = checkpoint["cursors"]
+            if checkpoint["fingerprint"] != fingerprint or not isinstance(cursors, dict) or any(
+                    not isinstance(key, str) or type(value) is not int or value < 0 for key, value in cursors.items()):
+                raise ValueError("检查点失效")
+        except (OSError, ValueError, KeyError, TypeError):
+            cursors = {}
+            handle.seek(0)
+            valid_end = 0
+            missing_newline = False
+            while True:
+                line = handle.readline()
+                if not line:
                     break
-                raise ValueError(f"事件日志第 {index + 1} 行损坏：{exc}") from exc
-            known.add((item["room_id"], item["seq"]))
-            valid_end += len(line)
-            missing_newline = not line.endswith(b"\n")
-        handle.seek(valid_end)
-        handle.truncate()
-        if missing_newline:
-            handle.write(b"\n")
-        for event in events:
-            key = (room_id, event["seq"])
-            if key in known:
+                try:
+                    item = json.loads(line.decode("utf-8"))
+                    if not isinstance(item, dict) or type(item.get("seq")) is not int or not item.get("room_id"):
+                        raise ValueError("缺少对局编号或事件序号")
+                    cursors[item["room_id"]] = max(cursors.get(item["room_id"], 0), item["seq"])
+                except (UnicodeError, ValueError) as exc:
+                    if not line.endswith(b"\n") and handle.tell() == stat.st_size:
+                        break
+                    raise ValueError(f"事件日志偏移 {valid_end} 处损坏：{exc}") from exc
+                valid_end += len(line)
+                missing_newline = not line.endswith(b"\n")
+            handle.seek(valid_end)
+            handle.truncate()
+            if missing_newline:
+                handle.write(b"\n")
+        for event in sorted(events, key=lambda item: item["seq"]):
+            if event["seq"] <= cursors.get(room_id, 0):
                 continue
             record = dict(event, room_id=room_id)
             handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
-            known.add(key)
+            cursors[room_id] = event["seq"]
             fresh.append(event)
         handle.flush()
         os.fsync(handle.fileno())
+        stat = os.fstat(handle.fileno())
+        checkpoint = {"fingerprint": [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns], "cursors": cursors}
+    temporary = None
+    try:
+        descriptor, name = tempfile.mkstemp(prefix=".events-cursor-", suffix=".tmp", dir=checkpoint_path.resolve().parent)
+        temporary = Path(name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(checkpoint, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(checkpoint_path)
+    except OSError:
+        pass  # 检查点可从已落盘的日志重建。
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return fresh
 
 
@@ -492,6 +519,7 @@ def main():
     p_notes.add_argument("--view", choices=["recent", "memory", "history"], default="recent", help="最近历程及记忆、仅保留记忆、完整历程分页")
 
     # status
+    subparsers.add_parser("clean", help="清理可重建的本地事件检查点")
     subparsers.add_parser("status", help="查看当前状态")
     subparsers.add_parser("game", help="查看自己的游戏状态与手牌")
 
@@ -502,6 +530,9 @@ def main():
         cmd_wait(args)
     elif args.command == "act":
         cmd_act(args)
+    elif args.command == "clean":
+        EVENTS_FILE.with_suffix(".cursor.json").unlink(missing_ok=True)
+        print("事件检查点已清理")
     elif args.command == "log":
         cmd_log(args)
     elif args.command == "status":

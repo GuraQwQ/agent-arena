@@ -105,6 +105,15 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(agent.persist_events("room-two", [self.event]), [self.event])
         self.assertEqual([item["room_id"] for item in self.journal()], ["room-one", "room-one", "room-two"])
 
+    def test_log_checkpoint_skips_history_and_rebuilds_when_missing(self):
+        agent.persist_events("room-one", [self.event])
+        with patch.object(agent.json, "loads", wraps=agent.json.loads) as parse:
+            agent.persist_events("room-one", [dict(self.event, seq=2)])
+            self.assertEqual(parse.call_count, 1)
+        agent.EVENTS_FILE.with_suffix(".cursor.json").unlink()
+        self.assertEqual(agent.persist_events("room-one", [self.event, dict(self.event, seq=3)])[0]["seq"], 3)
+        self.assertEqual([event["seq"] for event in self.journal()], [1, 2, 3])
+
     def test_valid_final_record_without_newline_is_preserved(self):
         agent.EVENTS_FILE.write_text(json.dumps(dict(self.event, room_id="room-one")), encoding="utf-8")
         agent.persist_events("room-one", [dict(self.event, seq=2)])
