@@ -24,6 +24,25 @@ class EngineCase(unittest.TestCase):
 
 
 class EngineTest(EngineCase):
+    def test_observation_modes_preserve_events_and_actions_interrupt_batch(self):
+        async def check():
+            self.room.update_settings({"observation_mode": "action"})
+            request = self.room.dispatch_action(1, "ACT", "行动")
+            token = self.room.seats[1].token
+            self.room.acknowledge(1, token, self.room.room_id, request and self.room.events[-1].seq)
+            self.room.submit_action(1, token, "ACT", "自己的回答", request.request_id)
+            self.assertEqual((await self.room.wait_turn(1, token, timeout=0.01))["code"], 0)
+            self.room.record_event("ANNOUNCEMENT", "观察", "保留原文")
+            self.assertEqual((await self.room.wait_turn(1, token, timeout=0.01))["code"], 0)
+            self.room.update_settings({"observation_mode": "batch", "observation_batch_seconds": 10})
+            task = asyncio.create_task(self.room.wait_turn(1, token, timeout=1))
+            await asyncio.sleep(0)
+            self.room.dispatch_action(1, "ACT", "立即行动")
+            response = await asyncio.wait_for(task, 0.5)
+            self.assertEqual(response["code"], 42)
+            self.assertIn("保留原文", [event["content"] for event in response["recent_events"]])
+        asyncio.run(check())
+
     def test_delivery_is_repeated_until_acknowledged(self):
         self.room.record_event("ANNOUNCEMENT", "消息", "线索")
         token = self.room.seats[1].token

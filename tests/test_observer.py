@@ -17,6 +17,19 @@ from observer import (
 
 
 class ObserverTest(unittest.TestCase):
+    def test_runtime_is_bounded_and_summary_omits_full_state(self):
+        snapshot = {"seats": {}, "events": [{"seq": i, "content": "正文", "data": {"value": i}} for i in range(1, 41)],
+                    "game": {"name": "示例", "state": {"large": "状态"}}, "flow": {"steps": ["完整指令"], "status": "IDLE"}}
+        result = build_runtime_snapshot(snapshot, limit=3)
+        self.assertEqual([event["seq"] for event in result["events"]], [38, 39, 40])
+        self.assertNotIn("state", result["game"])
+        self.assertNotIn("steps", result["flow"])
+        self.assertNotIn("payload", result["events"][0])
+        self.assertNotIn("host_text", result["events"][0])
+        page = build_runtime_snapshot(snapshot, since_seq=3, limit=2)
+        self.assertEqual(page["next_cursor"], 5)
+        self.assertTrue(page["has_more"])
+
     def test_instructions_and_speeches_have_distinct_categories(self):
         cases = [
             ({"event_type": "PRIVATE_MESSAGE", "from_seat": None}, "requests"),

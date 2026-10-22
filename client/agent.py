@@ -338,7 +338,7 @@ def cmd_log(args):
         print("❌ 未入座或缺少令牌")
         sys.exit(EXIT_ERROR)
 
-    res = api_request(cfg, "GET", "/api/player/log", params={"seat_id": seat_id, "since_seq": args.since or 0})
+    res = api_request(cfg, "GET", "/api/player/log", params={"seat_id": seat_id, "limit": args.limit, **({"since_seq": args.since} if args.since is not None else {})})
     events = res.get("events", [])
 
     print(f"=== {seat_id}号位 可见事件流 (共 {len(events)} 条) ===")
@@ -347,6 +347,8 @@ def cmd_log(args):
         scope_tag = "[私信]" if ev["scope"] == "PRIVATE" else "[公开]"
         print(f"#{ev['seq']} [{time_str}] {scope_tag} {ev['title']}")
         print(f"  {ev['content']}")
+    if res.get("has_more"):
+        print(f"继续：python agent.py log --since {res['next_seq']}")
     sys.exit(EXIT_OK)
 
 
@@ -414,14 +416,19 @@ def cmd_notes(args):
         print("❌ 请先执行主持人提供的自举命令")
         sys.exit(EXIT_ERROR)
     result = api_request(cfg, "GET", "/api/player/notes", params={
-        "seat_id": cfg["seat"], "room_id": cfg["room_id"], "since_seq": args.since})
+        "seat_id": cfg["seat"], "room_id": cfg["room_id"], "view": args.view, "limit": args.limit,
+        **({"since_seq": args.since} if args.since is not None else {})})
+    remembered = set(result["remembered_seqs"])
     for event in result["events"]:
         stamp = time.strftime("%H:%M:%S", time.localtime(event["timestamp"]))
-        print(f"#{event['seq']} {stamp} {event['content']}")
-    print("=== 当前保留的记忆 ===")
-    for event in result["journal"]["remembered"].get(str(cfg["seat"]), []):
-        print(f"#{event['seq']} {event['content']}")
-    print(f"下一页：python agent.py notes --since {result['next_seq']}")
+        tag = " [保留记忆]" if event["seq"] in remembered else ""
+        print(f"#{event['seq']} {stamp}{tag} {event['content']}")
+    if result.get("pending_action"):
+        action = result["pending_action"]
+        print("当前待办：" + json.dumps(action, ensure_ascii=False, separators=(",", ":")))
+    print(f"读取游标：{result['next_seq']}")
+    if result.get("has_more"):
+        print(f"继续：python agent.py notes --view history --since {result['next_seq']}")
     sys.exit(EXIT_OK)
 
 
@@ -468,7 +475,8 @@ def main():
 
     # log
     p_log = subparsers.add_parser("log", help="查看自身视野内的历史记录")
-    p_log.add_argument("--since", type=int, default=0, help="只查看该序列号之后的事件")
+    p_log.add_argument("--since", type=int, help="只查看该序列号之后的事件；0 从头读取")
+    p_log.add_argument("--limit", type=int, default=30, help="单页条数，默认读取最近 30 条")
 
     p_note = subparsers.add_parser("note", help="记录一次此刻的想法")
     p_note.add_argument("content", nargs="*", help="第一人称简短自述")
@@ -479,7 +487,9 @@ def main():
     p_note.add_argument("--retry", action="store_true", help="补发未确认的自述")
     p_note.add_argument("--discard", help="撤下指定编号的未确认记录")
     p_notes = subparsers.add_parser("notes", help="读取自己的自述与保留记忆")
-    p_notes.add_argument("--since", type=int, default=0, help="从此序号之后继续读取")
+    p_notes.add_argument("--since", type=int, help="从此序号之后继续读取")
+    p_notes.add_argument("--limit", type=int, default=20, help="单页历程条数")
+    p_notes.add_argument("--view", choices=["recent", "memory", "history"], default="recent", help="最近历程及记忆、仅保留记忆、完整历程分页")
 
     # status
     subparsers.add_parser("status", help="查看当前状态")

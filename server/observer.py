@@ -139,10 +139,12 @@ class EventEnvelope:
     raw: Optional[dict[str, Any]] = None
 
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
-        value = asdict(self)
-        value["data"] = value["payload"]
-        if not include_raw:
-            value.pop("raw", None)
+        value = {key: getattr(self, key) for key in ("seq", "timestamp", "round_num", "event_type", "title",
+                 "scope", "from_seat", "to_seat", "group_id", "importance", "category")}
+        value["content"] = self.host_text
+        value["data"] = {key: item for key, item in self.payload.items() if key != "submission"}
+        if include_raw:
+            value["raw"] = self.raw
         return _json_value(value)
 
     def model_dump(self, *, mode: str = "python", include_raw: bool = False, **_: Any) -> dict[str, Any]:
@@ -255,7 +257,7 @@ def build_room_summary(snapshot: Any) -> dict[str, Any]:
         "room_title": source.get("room_title", ""),
         "phase": source.get("phase", ""),
         "round_num": source.get("round_num", 1),
-        "seq_counter": source.get("seq_counter", max((normalize_event(event).seq or 0 for event in events), default=0)),
+        "seq_counter": source["seq_counter"] if "seq_counter" in source else max((_mapping(event).get("seq", 0) for event in events), default=0),
         "event_count": len(events),
         "active_action_count": len(source.get("active_actions") or {}),
         "seat_count": len(seat_values),
@@ -264,27 +266,32 @@ def build_room_summary(snapshot: Any) -> dict[str, Any]:
             for status in sorted({seat.get("status", "UNKNOWN") for seat in seat_dicts})
         },
         "seats": [_safe_seat(seat) for seat in seat_values],
-        "game": _json_value(source.get("game")),
-        "flow": _json_value(source.get("flow")),
+        "game": {key: source["game"].get(key) for key in ("id", "name", "version", "status")} if source.get("game") else None,
+        "flow": {key: _mapping(source.get("flow") or {}).get(key) for key in ("status", "index", "pending_seats")},
     }
 
 
-def build_runtime_snapshot(snapshot: Any) -> dict[str, Any]:
+def build_runtime_snapshot(snapshot: Any, since_seq=None, limit=30) -> dict[str, Any]:
     """构建给运行时观察者使用的完整但已脱敏快照。"""
     source = _snapshot_mapping(snapshot)
     summary = build_room_summary(source)
     active = source.get("active_actions") or {}
     seats = source.get("seats") or {}
     seat_values = list(seats.values()) if isinstance(seats, Mapping) else list(seats)
-    timestamps = [normalize_event(event).timestamp for event in source.get("events") or []]
+    events = source.get("events") or []
+    timestamps = [_mapping(event).get("timestamp") for event in events]
     timestamps = [value for value in timestamps if value is not None]
     actions = {}
     for key, value in active.items() if isinstance(active, Mapping) else []:
         item = _mapping(value)
         actions[str(key)] = {field: _json_value(item[field]) for field in item if field not in {"result_recipients"}}
+    if since_seq is None:
+        page = build_event_page(events[-limit:], limit=limit)
+    else:
+        page = build_event_page(events, cursor=since_seq, limit=limit)
     return {
         **summary,
-        "events": [normalize_event(event).to_dict() for event in source.get("events") or []],
+        **page,
         "active_actions": actions,
         "last_seen_seqs": _json_value(source.get("last_seen_seqs") or {}),
         "settings": _json_value(source.get("settings") or {}),
@@ -302,21 +309,20 @@ def build_event_page(events: Iterable[Any], cursor: Any = None, limit: int = 50)
     """按事件序号构建稳定分页结果；cursor 表示已消费的 seq。"""
     if limit < 1:
         raise ValueError("limit 必须大于 0")
-    normalized = [normalize_event(event) for event in events]
-    normalized.sort(key=lambda event: (event.seq is None, event.seq or 0))
+    ordered = sorted(events, key=lambda event: _mapping(event).get("seq") or 0)
     try:
         after = int(cursor) if cursor is not None else 0
     except (TypeError, ValueError):
         raise ValueError("cursor 必须是事件序号") from None
-    eligible = [event for event in normalized if (event.seq or 0) > after]
+    eligible = [event for event in ordered if (_mapping(event).get("seq") or 0) > after]
     page = eligible[:limit]
-    next_cursor = page[-1].seq if page else after
+    next_cursor = _mapping(page[-1])["seq"] if page else after
     return {
-        "events": [event.to_dict() for event in page],
+        "events": [normalize_event(event).to_dict() for event in page],
         "cursor": after,
         "next_cursor": next_cursor,
         "has_more": len(eligible) > len(page),
-        "total": len(normalized),
+        "total": len(ordered),
     }
 
 

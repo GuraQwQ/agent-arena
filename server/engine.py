@@ -388,6 +388,8 @@ class ArenaEngine:
     @mutating
     def update_settings(self, fields: dict):
         self.settings = ArenaSettings.model_validate({**self.settings.model_dump(), **fields})
+        for waiter in self._wait_events.values():
+            waiter.set()
 
     @mutating
     def advance_phase(self, phase: Optional[str], round_num: Optional[int]):
@@ -768,100 +770,55 @@ class ArenaEngine:
         self.last_seen_seqs[seat_id] = max(self.last_seen_seqs.get(seat_id, 0), seq)
 
     async def wait_turn(self, seat_id: int, token: str, timeout: int = 50) -> Dict[str, Any]:
-        """长轮询挂起等待核心逻辑"""
+        """行动立即返回；普通观察按房间策略聚合，历史始终保留。"""
         if not self.verify_token(seat_id, token):
             raise PermissionError("无效的座次令牌")
-
-        self.tick()
         seat = self.seats[seat_id]
-        seat.last_seen = time.time()
-        seat.status = "IDLE"
-
-        # 1. 如果已有待办行动，立即返回 42 (ACTION_REQUIRED)
-        action = self.active_actions.get(seat_id)
-        if action:
-            seat.status = "THINKING"
-            last_seq = self.last_seen_seqs.get(seat_id, 0)
-            new_events = self.filter_events_for_seat(seat_id, since_seq=last_seq)
-            return {
-                "room_id": self.room_id,
-                "code": 42,
-                "status": "ACTION_REQUIRED",
-                "action": action.model_dump(exclude={"result_recipients"}),
-                "recent_events": new_events
-            }
-
-        # 2. 检查是否有未读的观察更新 (Pre-think 43)
-        last_seq = self.last_seen_seqs.get(seat_id, 0)
-        unseen_events = self.filter_events_for_seat(seat_id, since_seq=last_seq)
-        if unseen_events:
-            return {
-                "room_id": self.room_id,
-                "code": 43,
-                "status": "OBSERVE_UPDATE",
-                "events": unseen_events,
-                "message": "收到观察更新；有新想法时用 note 记录，随后继续监听。"
-            }
-
-        # 3. 进入挂起等待
-        wait_event = asyncio.Event()
+        waiter = asyncio.Event()
         generation = self._reset_generation
-        self._wait_events[seat_id] = wait_event
+        self._wait_events[seat_id] = waiter
+        seat.last_seen = time.time()
         seat.status = "WAITING"
         self.broadcast_host_update()
-
+        expires = time.monotonic() + timeout
+        batch_started = None
         try:
-            await asyncio.wait_for(wait_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            pass
+            while True:
+                if generation != self._reset_generation:
+                    return {"code": 0, "status": "RESET"}
+                self.tick()
+                waiter.clear()
+                events = self.filter_events_for_seat(seat_id, self.last_seen_seqs.get(seat_id, 0))
+                action = self.active_actions.get(seat_id)
+                if action:
+                    return {"room_id": self.room_id, "code": 42, "status": "ACTION_REQUIRED",
+                            "action": action.model_dump(exclude={"result_recipients"}), "recent_events": events}
+                observations = [event for event in events if not (
+                    event["event_type"] == "ACTION_SUBMIT" and event.get("from_seat") == seat_id)]
+                urgent = any(event["event_type"] in {"ACTION_CANCEL", "PRIVATE_MESSAGE", "GAME_FINISHED", "GAME_RESULT"}
+                             or (event.get("data") or {}).get("importance") == "critical" for event in observations)
+                now = time.monotonic()
+                if observations and batch_started is None:
+                    batch_started = now - max(0, time.time() - observations[0]["timestamp"])
+                mode = self.settings.observation_mode
+                due = batch_started + self.settings.observation_batch_seconds if batch_started is not None else expires
+                if observations and (urgent or mode == "immediate" or mode == "batch" and now >= due):
+                    return {"room_id": self.room_id, "code": 43, "status": "OBSERVE_UPDATE", "events": events}
+                remaining = expires - now
+                if remaining <= 0:
+                    return {"code": 0, "status": "TIMEOUT"}
+                if observations and mode == "batch":
+                    remaining = min(remaining, max(0, due - now))
+                try:
+                    await asyncio.wait_for(waiter.wait(), remaining)
+                except asyncio.TimeoutError:
+                    pass
         finally:
-            if self._wait_events.get(seat_id) is wait_event:
+            if self._wait_events.get(seat_id) is waiter:
                 self._wait_events.pop(seat_id, None)
             seat.status = "THINKING" if seat_id in self.active_actions else "IDLE"
             seat.last_seen = time.time()
             self.broadcast_host_update()
-
-        seat.last_seen = time.time()
-
-        if generation != self._reset_generation:
-            return {
-                "code": 0,
-                "status": "RESET",
-                "message": "房间已重置，请重新开始监听。"
-            }
-
-        # 4. 唤醒后再次检查行动指令
-        self.tick()
-        action = self.active_actions.get(seat_id)
-        if action:
-            seat.status = "THINKING"
-            recent = self.filter_events_for_seat(seat_id, since_seq=self.last_seen_seqs.get(seat_id, 0))
-            return {
-                "room_id": self.room_id,
-                "code": 42,
-                "status": "ACTION_REQUIRED",
-                "action": action.model_dump(exclude={"result_recipients"}),
-                "recent_events": recent
-            }
-
-        # 5. 唤醒后检查是否是观察更新
-        fresh_events = self.filter_events_for_seat(seat_id, since_seq=self.last_seen_seqs.get(seat_id, 0))
-        if fresh_events:
-            return {
-                "room_id": self.room_id,
-                "code": 43,
-                "status": "OBSERVE_UPDATE",
-                "events": fresh_events,
-                "message": "收到观察更新；有新想法时用 note 记录，随后继续监听。"
-            }
-
-        # 6. 超时静默退出
-        seat.status = "IDLE"
-        return {
-            "code": 0,
-            "status": "TIMEOUT",
-            "message": "长轮询超时无事件，请自动重启 wait。"
-        }
 
     def _notify_sse(self, event: Event):
         """向所有连接的 Web 控制台推送增量事件"""

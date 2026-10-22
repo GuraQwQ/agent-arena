@@ -297,14 +297,17 @@ async def player_wait(
 @app.get("/api/player/log")
 async def player_log(
     seat_id: int = Query(...),
-    since_seq: int = Query(0),
+    since_seq: Optional[int] = Query(None, ge=0),
+    limit: int = Query(30, ge=1, le=500),
     x_player_token: str = Header(...)
 ):
     """拉取本 Agent 视野范围内的所有历史记录 (严格过滤)"""
     if not engine.verify_token(seat_id, x_player_token):
         raise HTTPException(status_code=403, detail="令牌无效")
-    events = engine.filter_events_for_seat(seat_id, since_seq=since_seq)
-    return {"events": events}
+    events = engine.filter_events_for_seat(seat_id, since_seq=since_seq or 0)
+    page = events[-limit:] if since_seq is None else events[:limit]
+    return {"events": page, "next_seq": page[-1]["seq"] if page else since_seq or 0,
+            "has_more": since_seq is not None and len(events) > limit}
 
 
 @app.post("/api/player/ack")
@@ -328,14 +331,28 @@ async def player_note(note: AgentNote):
 
 
 @app.get("/api/player/notes")
-async def player_notes(seat_id: int, room_id: str, since_seq: int = Query(0, ge=0),
-                       limit: int = Query(100, ge=1, le=500), x_player_token: str = Header(...)):
+async def player_notes(seat_id: int, room_id: str, since_seq: Optional[int] = Query(None, ge=0),
+                       limit: int = Query(20, ge=1, le=500), view: str = Query("recent", pattern="^(recent|memory|history)$"),
+                       x_player_token: str = Header(...)):
     if room_id != engine.room_id or not engine.verify_token(seat_id, x_player_token):
         raise HTTPException(status_code=403, detail="房间或席位凭证不匹配")
     events = [event for event in engine.events if event.event_type == "AGENT_NOTE" and event.from_seat == seat_id]
-    page = [event for event in events if event.seq > since_seq][:limit]
-    return {"events": [event.model_dump(exclude={"secret_reason"}) for event in page],
-            "journal": journal_projection(events), "next_seq": page[-1].seq if page else since_seq}
+    eligible = [event for event in events if since_seq is None or event.seq > since_seq]
+    page = eligible[:limit] if since_seq is not None or view == "history" else eligible[-limit:]
+    if view == "memory":
+        page = []
+    memories = journal_projection(events)["remembered"].get(seat_id, []) if view != "history" else []
+    selected = {event.seq: event.model_dump(exclude={"secret_reason"}) for event in page}
+    for memory in memories:
+        selected[memory["seq"]] = memory
+    for event in selected.values():
+        event["data"].pop("submission", None)
+    pending = engine.active_actions.get(seat_id)
+    return {"events": sorted(selected.values(), key=lambda event: event["seq"]),
+            "remembered_seqs": [event["seq"] for event in memories],
+            "pending_action": pending.model_dump(exclude={"result_recipients"}) if pending and view == "recent" else None,
+            "next_seq": page[-1].seq if page else since_seq or 0,
+            "has_more": view != "memory" and (since_seq is not None or view == "history") and len(eligible) > limit}
 
 
 @app.get("/api/player/status")
@@ -401,20 +418,20 @@ async def admin_snapshot(request: Request):
 @app.get("/api/admin/summary")
 async def admin_summary(request: Request):
     require_admin(request)
-    return build_room_summary(engine.get_host_snapshot())
+    return build_room_summary(engine.snapshot())
 
 
 @app.get("/api/admin/runtime")
-async def admin_runtime(request: Request):
+async def admin_runtime(request: Request, since_seq: Optional[int] = Query(None, ge=0), limit: int = Query(30, ge=1, le=500)):
     require_admin(request)
-    return build_runtime_snapshot(engine.get_host_snapshot())
+    return build_runtime_snapshot(engine.snapshot(), since_seq=since_seq, limit=limit)
 
 
 @app.get("/api/admin/events")
 async def admin_events(request: Request, since_seq: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
     require_admin(request)
-    events = [event for event in engine.get_host_snapshot().get("events", []) if event.get("seq", 0) > since_seq]
-    return build_event_page(events, limit=limit)
+    events = [event for event in engine.events if event.seq > since_seq and engine._is_event_in_history_window(event)]
+    return build_event_page(events, cursor=since_seq, limit=limit)
 
 
 @app.get("/api/admin/perspective")

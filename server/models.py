@@ -113,6 +113,8 @@ class ArenaSettings(BaseModel):
     allow_free_actions: bool = False
     history_rounds: Optional[int] = Field(None, ge=1)
     history_seconds: Optional[int] = Field(None, ge=1)
+    observation_mode: Literal["batch", "immediate", "action"] = "batch"
+    observation_batch_seconds: float = Field(1.0, ge=0.1, le=10, allow_inf_nan=False)
 
 
 class ArenaSettingsUpdate(BaseModel):
@@ -120,6 +122,8 @@ class ArenaSettingsUpdate(BaseModel):
     allow_free_actions: Optional[bool] = None
     history_rounds: Optional[int] = Field(None, ge=1)
     history_seconds: Optional[int] = Field(None, ge=1)
+    observation_mode: Optional[Literal["batch", "immediate", "action"]] = None
+    observation_batch_seconds: Optional[float] = Field(None, ge=0.1, le=10, allow_inf_nan=False)
 
 
 class SeatDefinition(BaseModel):

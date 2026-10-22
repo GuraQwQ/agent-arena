@@ -19,3 +19,11 @@
 CLI 与原生适配器复用此接口。适配器只转发 Agent 明确写出的自述，使用 `channel: "native"`，并将原消息的稳定编号作为 `note_id`。重发保留原 `note_id`、`created_at` 与正文；同一编号重试返回同一事件，修改内容需用新编号追加修正。服务端保存当时的作者信息和实际记录时间。结束行动后到达的关联记录标明补充，继续引用原行动编号。
 
 待确认记录保存在客户端现有配置中，`arena note --retry` 补发；`--discard <note_id>` 撤下未确认项。界面气泡、侧栏及存档引用同一事件，`memory.md` 与行动附注按其文档和行动用途保留。
+
+## 观察与恢复
+
+房间 `observation_mode` 支持 `batch`（默认合并 1 秒）、`immediate`、`action`。行动请求、定向私信、行动取消及关键事件立即通知；普通事件保持原文，行动模式在下次行动时一并读取。自身提交回显不会单独唤醒。
+
+`arena act "回答" --watch` 提交成功后继续监听。`arena notes` 默认恢复最近 20 条自述、当前保留记忆和待办，同一记录只显示一次；`--view memory` 只读保留记忆，`--view history --since 0 --limit 20` 从头分页。`arena log` 默认最近 30 条，指定 `--since 0` 从头分页。
+
+主持人 `summary` 只返回房间摘要；`runtime` 默认最近 30 条，可用 `since_seq`、`limit` 增量读取。事件返回一份主持人正文 `content` 和结构化数据 `data`，完整状态仍可通过 `snapshot` 获取。
