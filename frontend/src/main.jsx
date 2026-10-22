@@ -69,7 +69,7 @@ function App() {
   const [eventPresenter, setEventPresenter] = useState(null);
   const updateEventPresenter = useCallback(presenter => setEventPresenter(() => presenter), []);
 
-  const current = perspectiveSnapshot || arena.snapshot;
+  const current = perspective === null ? arena.snapshot : perspectiveSnapshot?.perspective_seat === perspective ? perspectiveSnapshot : null;
   const seats = current?.seats || {};
 
   useEffect(() => {
@@ -82,9 +82,12 @@ function App() {
   }, [display]);
 
   useEffect(() => {
-    setPerspectiveSnapshot(null);
     if (perspective === null || !arena.snapshot) return;
-    arenaApi.perspective(perspective).then(setPerspectiveSnapshot).catch(error => arena.showNotice(error.message, true));
+    const controller = new AbortController();
+    arenaApi.perspective(perspective, controller.signal).then(data => {
+      if (!controller.signal.aborted) setPerspectiveSnapshot(data);
+    }).catch(error => { if (!controller.signal.aborted) arena.showNotice(error.message, true); });
+    return () => controller.abort();
   }, [arena.snapshot, perspective]);
 
   if (!arena.access?.authenticated) return <HostLogin access={arena.access} onJoin={arena.join} onRefresh={arena.refreshAccess} notice={arena.notice} />;

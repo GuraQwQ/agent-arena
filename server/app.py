@@ -921,12 +921,7 @@ if STATIC_DIR.exists():
             return HTMLResponse(react_index.read_text(encoding="utf-8"), headers={
                 "Cache-Control": "no-store"
             })
-        index_file = STATIC_DIR / "index.html"
-        if index_file.exists():
-            files = ("style.css", "event_feed.js", "host_shell.js", "app.js", "mod_settings.js", "mod_panel.js")
-            version = hashlib.sha256(b"".join((STATIC_DIR / filename).read_bytes() for filename in files)).hexdigest()[:16]
-            return HTMLResponse(index_file.read_text(encoding="utf-8").replace("__ASSET_VERSION__", version), headers={"Cache-Control": "no-store"})
-        return "<h1>Agent Arena 服务已启动</h1>"
+        return HTMLResponse("<h1>Agent Arena 服务已启动</h1><p>请在项目目录运行 npm --prefix frontend run build 构建控制台。</p>", status_code=503)
 
 
 mod_manager = ModManager(GAMES_ROOT, engine, app)

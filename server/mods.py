@@ -245,9 +245,9 @@ class ModManager:
         if not metadata or metadata.get("error"):
             raise ModSettingsError(f"Mod {mod_id} 不存在或清单无效")
         normalized = validate_values(metadata.get("settings", {}), values)
-        self.engine.update_mod_settings(mod_id, normalized)
         if mod_id in self.enabled:
-            return self.apply(self.enabled)
+            return self.apply(self.enabled, settings_update={mod_id: normalized})
+        self.engine.update_mod_settings(mod_id, normalized)
         return self.status()
 
     def _new_app(self):
@@ -256,11 +256,11 @@ class ModManager:
         candidate.router.routes = list(self.core_app.router.routes)
         return candidate
 
-    def apply(self, enabled, locked=None, restore_snapshot=None):
+    def apply(self, enabled, locked=None, restore_snapshot=None, settings_update=None):
         with self.engine._state_lock:
-            return self._apply(enabled, locked, restore_snapshot)
+            return self._apply(enabled, locked, restore_snapshot, settings_update)
 
-    def _apply(self, enabled, locked, restore_snapshot):
+    def _apply(self, enabled, locked, restore_snapshot, settings_update=None):
         plan = self.plan(enabled, locked)
         if not plan["valid"]:
             self.issues = plan["issues"]
@@ -272,7 +272,8 @@ class ModManager:
         owners = {}
         changes = {}
         patched_by = {}
-        pending_settings = dict(room.mod_settings)
+        pending_settings = dict(restore_snapshot.get("mod_settings", {}) if restore_snapshot is not None else room.mod_settings)
+        pending_settings.update(settings_update or {})
         candidate = self._new_app()
         for route in candidate.routes:
             owners[id(route)] = "Arena 核心"
@@ -287,7 +288,7 @@ class ModManager:
                 mod = plan["catalog"][mod_id]
                 module = load_entry(self.root, mod)
                 modules[mod_id] = module
-                settings = validate_values(mod.get("settings", {}), room.mod_settings.get(mod_id, {}))
+                settings = validate_values(mod.get("settings", {}), pending_settings.get(mod_id, {}))
                 pending_settings[mod_id] = settings
                 context = ModContext(self, mod_id, candidate, room, settings)
                 hook = getattr(module, "install", None)
@@ -331,7 +332,7 @@ class ModManager:
             room.mod_profile = [{key: plan["catalog"][mod_id][key] for key in ("id", "name", "version", "type", "rules_hash")} for mod_id in plan["order"]]
             room.mod_settings = pending_settings
             if restore_snapshot is not None:
-                room.restore_archive(restore_snapshot, archive_current=False, mod_profile=room.mod_profile)
+                room.restore_archive({**restore_snapshot, "mod_settings": pending_settings}, archive_current=False, mod_profile=room.mod_profile)
             else:
                 from models import VisibilityScope
                 room.record_event("MOD_RELOAD", "Mod 组合已重载", " → ".join(plan["order"]) or "核心规则", scope=VisibilityScope.HOST_ONLY, data={"mod_profile": room.mod_profile})

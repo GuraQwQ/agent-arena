@@ -2,6 +2,7 @@ import { useState } from "react";
 import { arenaApi } from "../api/arenaClient.js";
 import { ACTION_NAMES } from "../events/eventModel.js";
 import "./director.css";
+import { SessionControls } from "./SessionControls.jsx";
 
 export function DirectorPanel({ snapshot, onNotice, onClose }) {
   const seats = Object.values(snapshot?.seats || {});
@@ -50,6 +51,7 @@ export function DirectorPanel({ snapshot, onNotice, onClose }) {
 
   return <section className="director-panel" aria-label="主持调度面板">
     <header className="director-heading"><div><h3>主持调度</h3><p>{snapshot?.phase} · 第 {snapshot?.round_num || 1} 回合</p></div><button type="button" className="icon-button" aria-label="收起主持调度" onClick={onClose}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>
+    <SessionControls snapshot={snapshot} onNotice={onNotice} />
     <section className="director-section"><h4>推进阶段</h4><form onSubmit={sendPhase}>
       <label htmlFor="director-phase">新阶段名称</label><input id="director-phase" value={phase} onChange={event => setPhase(event.target.value)} placeholder="例如：交锋回应" required />
       <label htmlFor="director-round">回合</label><input id="director-round" type="number" min="1" value={round} onChange={event => setRound(event.target.value)} required />
@@ -66,6 +68,12 @@ export function DirectorPanel({ snapshot, onNotice, onClose }) {
       {scope === "GROUP" && <><label htmlFor="director-group">接收阵营</label><select id="director-group" required value={group} onChange={event => setGroup(event.target.value)}><option value="">选择阵营</option>{[...new Set(seats.map(seat => seat.group_id).filter(Boolean))].map(id => <option key={id}>{id}</option>)}</select></>}
       <label htmlFor="director-timeout">限时（秒）</label><input id="director-timeout" type="number" min="10" max="300" value={timeout} onChange={event => setTimeoutValue(event.target.value)} required />
       {pending && <p className="director-pending">{selected.name} 正在等待本次{ACTION_NAMES[pending.action_type] || "行动"}提交</p>}
+      {pending && <button type="button" className="button button-quiet" disabled={busy} onClick={async () => {
+        setBusy(true);
+        try { await arenaApi.command({ command_type: "CANCEL_ACTION", target_seat: selected.seat_id }); onNotice("行动已取消"); }
+        catch (error) { onNotice(error.message, true); }
+        finally { setBusy(false); }
+      }}>取消当前行动</button>}
       <button className="button button-primary button-wide" disabled={busy || !selected || Boolean(pending)}>{busy ? "正在发送…" : "发出行动指令"}</button>
     </form></section>
   </section>;

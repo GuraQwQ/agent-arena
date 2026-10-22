@@ -32,3 +32,10 @@
   .director-toggle { justify-content: center; }
   .inspector-rail.is-open { position: fixed; inset: 76px 12px 12px auto; z-index: 12; width: min(360px, calc(100vw - 24px)); padding: 18px; overflow: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 }
+
+.director-section > summary { cursor: pointer; font-weight: 650; margin-bottom: 14px; }
+.director-section > label, .director-section details > label { display: grid; gap: 7px; margin: 12px 0; }
+.director-actions { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0; }
+.director-confirm { padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.director-confirm p { font-size: 12px; line-height: 1.6; }
+.mod-root { min-height: inherit; }
